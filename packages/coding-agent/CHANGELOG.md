@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a `c` hotkey in the plan-review overlay that copies the current reviewed plan markdown to the system clipboard, including in-overlay edits.
+
 ## [16.3.12] - 2026-07-08
 
 ### Added
