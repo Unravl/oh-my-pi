@@ -121,7 +121,8 @@ const GROK_EFFORT_CAPABLE_PREFIXES = [
 /**
  * Grok SKUs that expose the wire `reasoning.effort` dial. Other Grok reasoners
  * (e.g. `grok-build`, `grok-4.20-0309-reasoning`) think natively but reject the
- * param, so callers must omit reasoning effort for them.
+ * param, so callers must omit reasoning effort for them. `grok-4.6` accepts
+ * `low`/`medium`/`high`/`xhigh` and 400s on `max`.
  */
 export const isGrokReasoningEffortCapable = memo((modelId: string): boolean => {
 	const bare = bareModelId(modelId).trim().toLowerCase();

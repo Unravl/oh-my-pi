@@ -292,6 +292,25 @@ describe("xAI Responses reasoning-effort suppression", () => {
 		expect(buildModel(grokResponsesSpec("grok-code-fast-1", "xai")).thinking).toBeUndefined();
 	});
 
+	it("exposes the grok-4.6 low..xhigh ladder and rejects max", () => {
+		const model = buildModel(grokResponsesSpec("grok-4.6"));
+		expect(model.compat.supportsReasoningEffort).toBe(true);
+		expect(model.compat.omitReasoningEffort).toBe(false);
+		expect(model.thinking?.efforts).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
+		expect(model.thinking?.efforts).not.toContain(Effort.Max);
+	});
+
+	it("lets the grok-4.6 allowlist beat a stale cached omitReasoningEffort flag", () => {
+		const model = buildModel({
+			...grokResponsesSpec("grok-4.6"),
+			compat: { omitReasoningEffort: true },
+		});
+		expect(model.compat.supportsReasoningEffort).toBe(true);
+		expect(model.compat.omitReasoningEffort).toBe(false);
+		expect(model.thinking?.efforts).toContain(Effort.XHigh);
+		expect(model.thinking?.efforts).not.toContain(Effort.Max);
+	});
+
 	it("lets an explicit compat.supportsReasoningEffort override the allowlist default", () => {
 		const compat = buildOpenAIResponsesCompat({
 			...grokResponsesSpec("grok-build"),

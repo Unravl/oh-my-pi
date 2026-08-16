@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed `streamMarkupHealingPattern` gating DeepSeek DSML healing on a provider-id allowlist, which left DeepSeek models behind user-configured proxies (LiteLLM, private gateways) with no tool-call grammar. Whether the envelope leaks is decided by the serving stack behind the host, not the provider id, so any DeepSeek model on a non-official-OpenAI endpoint now selects `"dsml"`.
+- Fixed SuperGrok (`xai-oauth`) Grok 4.6 hiding the thinking-level picker: the Responses effort-capable allowlist now includes `grok-4.6`, so `/model` can select the documented `low`/`medium`/`high`/`xhigh` ladder (`max` is rejected by api.x.ai).
+
 ## [17.3.5] - 2026-08-16
 
 ### Added
@@ -35,6 +37,9 @@
 - Fixed raw `COPILOT_GITHUB_TOKEN` credentials skipping plan-specific endpoint discovery, which routed GitHub Copilot Business model requests to the personal endpoint and returned HTTP 403. The GitHub Copilot model cache is now scoped per credential, so switching the token no longer serves another account's stale endpoint for the cache TTL ([#8507](https://github.com/can1357/oh-my-pi/issues/8507)).
 - Fixed the OpenRouter `deepseek/deepseek-v4-pro-0813` route silently clamping the reasoning effort to `high`: the dated SKU advertises (and accepts) the wire-exact `low`/`high`/`max` ladder, so its effort override no longer collapses to `high`-only. The undated `deepseek/deepseek-v4-pro` OpenRouter route stays `high`-only. ([#8517](https://github.com/can1357/oh-my-pi/issues/8517))
 
+- Fixed SuperGrok (`xai-oauth`) Grok 4.6 hiding the thinking-level picker: the Responses effort-capable allowlist now includes `grok-4.6`, so `/model` can select the documented `low`/`medium`/`high`/`xhigh` ladder (`max` is rejected by api.x.ai).
+
+- Fixed `streamMarkupHealingPattern` gating DeepSeek DSML healing on a provider-id allowlist, which left DeepSeek models behind user-configured proxies (LiteLLM, private gateways) with no tool-call grammar. Whether the envelope leaks is decided by the serving stack behind the host, not the provider id, so any DeepSeek model on a non-official-OpenAI endpoint now selects `"dsml"`.
 ## [17.3.2] - 2026-08-13
 
 ### Added
