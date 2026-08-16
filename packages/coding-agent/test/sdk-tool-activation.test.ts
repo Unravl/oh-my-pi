@@ -1267,6 +1267,11 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			const errors: string[] = [];
 			const unsubscribe = runner.onError(error => {
 				errors.push(error.error);
+				// The 10ms budget exists only to reap the stalled first handler
+				// quickly; handlers run sequentially and the budget is read per
+				// handler, so restoring it here keeps machine load from timing out
+				// the genuine recovery registration too (flaked in full-suite runs).
+				testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 			});
 			testSetExtensionHandlerTimeoutMs(10);
 
@@ -1474,6 +1479,10 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 			releaseStalledRegistration.resolve();
 			const failure = await detachedFailure.promise;
+			// Restore the default budget before the recovered registration flush:
+			// the 10ms budget was only for reaping the stalled activation, and the
+			// real presentation pass can exceed it under full-suite load.
+			testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 			releaseRecoveredRegistration.resolve();
 			await recoveredActivation.promise;
 

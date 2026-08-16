@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.3.5] - 2026-08-16
+
+### Added
+
+- Added retryable oneshot completion support (`retryTransientCompletion`) so non-agent LLM calls correctly retry on transient provider failures (Anthropic overload/rate-limit errors, HTTP 429/500/502/503/529), honoring provider-supplied retry-after timing before giving up.
+
 ### Fixed
 
 - Fixed DeepSeek V4 turns arriving as raw tag soup with zero tool calls when the serving stack detokenizes with `skip_special_tokens`. Dropping DeepSeek's `｜DSML｜` special tokens leaves the ordinary text around them intact, so `<｜DSML｜invoke name="glob">` reaches the client as `<invoke name="glob">`; the exact-token DSML grammar cannot match that, the whole envelope was forwarded as visible text, and the model then imitated its own broken output on the following turn. The DSML healer now runs a second-stage Anthropic-tagset grammar over whatever the exact-token grammar leaves in the visible channel, recovering the stripped envelope into structured tool calls.
@@ -14,6 +20,28 @@
 
 - Removed `StreamMarkupHealing.sectionClosed` and `modelMayLeakDsmlToolCalls`. The getter had no consumers and could not be correct by construction (it substring-matched each chunk, so any envelope close split across chunk boundaries never registered); the gate degenerated to a rename of `isDeepseekModelIdOrName` once the provider allowlist was dropped.
 - Fixed `omp usage invalidate` to discard stale OAuth and API-key usage snapshots, then force a cache-bypassing, per-provider serialized refresh so upgraded subscriptions do not silently retain pre-change quota data.
+- Fixed xAI availability detection so paid-key-only setups correctly default to `xai/grok-4.5` instead of the free SuperGrok catalog; explicit `xai-oauth/…` selectors still work as before.
+- Fixed xAI Responses requests sending unsupported parameters (reasoning summary, presence/frequency penalties) that some models rejected.
+- Fixed Umans usage reporting incorrectly marking quota as exhausted based on raw request counts instead of actual weighted usage, and improved the usage display to show both a soft-cap warning and a hard exhaustion limit with an accurate countdown to reset.
+- Fixed `omp usage invalidate` to fully clear stale usage data and force a fresh refresh, so upgraded subscriptions no longer show outdated quota information.
+- Improved session recovery to correctly treat certain Cursor HTTP/2 connection errors as transient instead of ending the session.
+- Fixed OpenAI-compatible streams (e.g. DeepSeek) that are cut off mid-generation being silently treated as a completed response instead of being retried.
+- Fixed DeepSeek resource-exhaustion interruptions not being automatically retried.
+- Fixed tool-call IDs being lost during same-model replay, which could break correlation with custom gateways.
+- Fixed Kimi Code multi-account routing to prefer accounts with more available quota, respect usage-limit cooldowns, and keep consistent usage history across token refreshes.
+- Fixed Anthropic custom signing-proxy conversations losing tool-search results and thinking content during replay.
+- Fixed rare runaway response loops across model providers so they now fail gracefully instead of repeating indefinitely.
+- Fixed xAI rejecting entire turns due to certain MCP tool schema shapes, restoring compatibility while isolating any remaining incompatible tools rather than failing the whole request.
+- Fixed Alibaba DashScope/Bailian transient per-minute rate limits being misclassified as full quota exhaustion, causing unnecessary long backoffs instead of quick retries.
+- Fixed Anthropic-compatible streams dropping thinking content, which broke replay of prior reasoning.
+- Updated the Alibaba Coding Plan China login flow to point to the current Bailian API-key management console.
+
+## [17.3.4] - 2026-08-14
+
+### Fixed
+
+- Fixed `omp usage invalidate` to discard stale OAuth and API-key usage snapshots, then force a cache-bypassing, per-provider serialized refresh with a broker request budget sized for the full unfiltered account batch, so upgraded subscriptions do not silently retain pre-change quota data.
+- Fixed quota reporting and Cookie capture guidance for China (Beijing) Alibaba Token Plan credentials ([#8509](https://github.com/can1357/oh-my-pi/issues/8509)).
 
 ## [17.3.3] - 2026-08-14
 

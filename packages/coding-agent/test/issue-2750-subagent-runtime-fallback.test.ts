@@ -52,6 +52,7 @@ function createYieldingSession(fallback: "served" | "unproven" | false = "served
 		getEnabledToolNames: () => ["yield"],
 		setActiveToolsByName: async () => {},
 		setIrcWakeTurnObserver: () => {},
+		subscribeRunState: () => () => {},
 		subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => {
 			listeners.push(listener);
 			return () => {};
