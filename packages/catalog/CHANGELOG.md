@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Regenerated the Cursor agent protobufs to model hosted WebFetch permission queries (`interaction_query` / `interaction_response` field 9) and the matching `ToolCall` variant (field 37).
+
+## [17.3.6] - 2026-08-17
+
+### Changed
+
+- Changed the paid xAI (XAI_API_KEY) and SuperGrok (xai-oauth) default models to grok-4.6.
+
 ### Fixed
 
 - Fixed `streamMarkupHealingPattern` gating DeepSeek DSML healing on a provider-id allowlist, which left DeepSeek models behind user-configured proxies (LiteLLM, private gateways) with no tool-call grammar. Whether the envelope leaks is decided by the serving stack behind the host, not the provider id, so any DeepSeek model on a non-official-OpenAI endpoint now selects `"dsml"`.

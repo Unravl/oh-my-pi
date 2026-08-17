@@ -12,6 +12,9 @@ import {
 	AgentServerMessageSchema,
 	AgentStoreConflictErrorSchema,
 	AgentStoreConflictResultSchema,
+	AskQuestionInteractionResponseSchema,
+	AskQuestionRejectedSchema,
+	AskQuestionResultSchema,
 	AssistantMessageSchema,
 	BackgroundShellSpawnResultSchema,
 	CanvasDiagnosticsErrorSchema,
@@ -26,6 +29,9 @@ import {
 	ConversationStateStructureSchema,
 	ConversationStepSchema,
 	ConversationTurnStructureSchema,
+	CreatePlanErrorSchema,
+	CreatePlanRequestResponseSchema,
+	CreatePlanResultSchema,
 	DeleteErrorSchema,
 	DeleteRejectedSchema,
 	DeleteResultSchema,
@@ -34,6 +40,10 @@ import {
 	DiagnosticsRejectedSchema,
 	DiagnosticsResultSchema,
 	DiagnosticsSuccessSchema,
+	ExaFetchRequestResponse_ApprovedSchema,
+	ExaFetchRequestResponseSchema,
+	ExaSearchRequestResponse_ApprovedSchema,
+	ExaSearchRequestResponseSchema,
 	ExecClientControlMessageSchema,
 	type ExecClientMessage,
 	ExecClientMessageSchema,
@@ -59,6 +69,9 @@ import {
 	GrepSuccessSchema,
 	type GrepUnionResult,
 	GrepUnionResultSchema,
+	type InteractionQuery,
+	type InteractionResponse,
+	InteractionResponseSchema,
 	KvClientMessageSchema,
 	type KvServerMessage,
 	ListMcpResourcesErrorSchema,
@@ -109,6 +122,8 @@ import {
 	SelectedContextSchema,
 	SelectedImageSchema,
 	SetBlobResultSchema,
+	SetupVmEnvironmentResultSchema,
+	SetupVmEnvironmentSuccessSchema,
 	ShellAllowlistPrecheckResultSchema,
 	type ShellArgs,
 	ShellFailureSchema,
@@ -128,11 +143,17 @@ import {
 	SubagentAwaitResultSchema,
 	SubagentErrorSchema,
 	SubagentResultSchema,
+	SwitchModeRequestResponse_RejectedSchema,
+	SwitchModeRequestResponseSchema,
 	ThinkingMessageSchema,
 	ToolCallSchema,
 	UserMessageActionSchema,
 	UserMessageSchema,
 	WebFetchAllowlistPrecheckResultSchema,
+	WebFetchRequestResponse_ApprovedSchema,
+	WebFetchRequestResponseSchema,
+	WebSearchRequestResponse_ApprovedSchema,
+	WebSearchRequestResponseSchema,
 	WriteErrorSchema,
 	WriteRejectedSchema,
 	WriteResultSchema,
@@ -940,7 +961,7 @@ export type ToolCallState = ToolCall & {
 	[kStreamingBlockIndex]: number;
 	[kStreamingPartialJson]?: string;
 	[kStreamingLastParseLen]?: number;
-	[kStreamingBlockKind]: "mcp" | "todo" | "cursor-exec" | "connect-scm";
+	[kStreamingBlockKind]: "mcp" | "todo" | "cursor-exec" | "connect-scm" | "web-fetch";
 	[kStreamingEnvelopeId]?: string;
 	[kCursorExecResolved]?: true;
 };
@@ -1024,9 +1045,211 @@ export async function handleServerMessage(
 				state,
 			),
 		);
+	} else if (msgCase === "interactionQuery") {
+		// Cursor asks the client to approve native web search / Exa fetch / etc.
+		// before it will continue the turn. Dropping the frame leaves the server
+		// waiting on a reply that never comes; the lazy idle watchdog then
+		// aborts a live stream with "Provider stream stalled while waiting for
+		// the next event" (cursor-grok-4.6-xhigh after a WebFetch/WebSearch
+		// permission prompt).
+		handleInteractionQuery(msg.message.value, h2Request);
 	} else if (msgCase === "conversationCheckpointUpdate") {
 		handleConversationCheckpointUpdate(msg.message.value, output, usageState, onConversationCheckpoint);
 	}
+}
+
+function handleInteractionQuery(query: InteractionQuery, h2Request: http2.ClientHttp2Stream): void {
+	const queryCase = query.query.case;
+	log("interactionQuery", queryCase, query.query.value);
+	if (!queryCase) {
+		// Newer Cursor builds add query variants this proto has not named yet
+		// (WebFetch was field 9). The server still blocks on a same-number
+		// InteractionResponse. Permission-shaped queries use Approved/Rejected
+		// like Exa fetch; answering `approved` unblocks the turn.
+		const unknown = protoUnknownFields(query).find(field => field.wireType === 2 && field.no >= 2);
+		if (unknown) {
+			log("warn", "unknownInteractionQueryApproved", { id: query.id, field: unknown.no });
+			sendUnknownApprovedInteractionResponse(h2Request, query.id, unknown.no);
+			return;
+		}
+		log("warn", "unknownInteractionQuery", { id: query.id });
+		return;
+	}
+
+	switch (queryCase) {
+		case "webSearchRequestQuery":
+			// Permission gate, not "please run the search". Approve so Cursor
+			// performs the hosted search and the turn continues.
+			sendInteractionResponse(h2Request, query.id, {
+				case: "webSearchRequestResponse",
+				value: create(WebSearchRequestResponseSchema, {
+					result: { case: "approved", value: create(WebSearchRequestResponse_ApprovedSchema, {}) },
+				}),
+			});
+			return;
+		case "exaSearchRequestQuery":
+			sendInteractionResponse(h2Request, query.id, {
+				case: "exaSearchRequestResponse",
+				value: create(ExaSearchRequestResponseSchema, {
+					result: { case: "approved", value: create(ExaSearchRequestResponse_ApprovedSchema, {}) },
+				}),
+			});
+			return;
+		case "exaFetchRequestQuery":
+			sendInteractionResponse(h2Request, query.id, {
+				case: "exaFetchRequestResponse",
+				value: create(ExaFetchRequestResponseSchema, {
+					result: { case: "approved", value: create(ExaFetchRequestResponse_ApprovedSchema, {}) },
+				}),
+			});
+			return;
+		case "webFetchRequestQuery":
+			// Hosted WebFetch permission prompt. Field 9 is what cursor-grok-4.6-xhigh
+			// sends after "I'll fetch the page…"; answering lets the server continue.
+			sendInteractionResponse(h2Request, query.id, {
+				case: "webFetchRequestResponse",
+				value: create(WebFetchRequestResponseSchema, {
+					result: { case: "approved", value: create(WebFetchRequestResponse_ApprovedSchema, {}) },
+				}),
+			});
+			return;
+		case "askQuestionInteractionQuery":
+			sendInteractionResponse(h2Request, query.id, {
+				case: "askQuestionInteractionResponse",
+				value: create(AskQuestionInteractionResponseSchema, {
+					result: create(AskQuestionResultSchema, {
+						result: {
+							case: "rejected",
+							value: create(AskQuestionRejectedSchema, {
+								reason: `Interactive questions are ${NOT_IMPLEMENTED_SUFFIX}`,
+							}),
+						},
+					}),
+				}),
+			});
+			return;
+		case "switchModeRequestQuery":
+			sendInteractionResponse(h2Request, query.id, {
+				case: "switchModeRequestResponse",
+				value: create(SwitchModeRequestResponseSchema, {
+					result: {
+						case: "rejected",
+						value: create(SwitchModeRequestResponse_RejectedSchema, {
+							reason: `Mode switches are ${NOT_IMPLEMENTED_SUFFIX}`,
+						}),
+					},
+				}),
+			});
+			return;
+		case "createPlanRequestQuery":
+			sendInteractionResponse(h2Request, query.id, {
+				case: "createPlanRequestResponse",
+				value: create(CreatePlanRequestResponseSchema, {
+					result: create(CreatePlanResultSchema, {
+						result: {
+							case: "error",
+							value: create(CreatePlanErrorSchema, {
+								error: `Plan files are ${NOT_IMPLEMENTED_SUFFIX}`,
+							}),
+						},
+					}),
+				}),
+			});
+			return;
+		case "setupVmEnvironmentArgs":
+			// Result oneof has only `success`. Answering is still required: silence
+			// strands the query id the same way an unanswered search approval does.
+			log("warn", "setupVmEnvironmentApprovedEmpty", { id: query.id });
+			sendInteractionResponse(h2Request, query.id, {
+				case: "setupVmEnvironmentResult",
+				value: create(SetupVmEnvironmentResultSchema, {
+					result: { case: "success", value: create(SetupVmEnvironmentSuccessSchema, {}) },
+				}),
+			});
+			return;
+		default: {
+			const _exhaustive: never = queryCase;
+			log("warn", "unhandledInteractionQuery", { queryCase: _exhaustive, id: query.id });
+		}
+	}
+}
+
+type ProtoUnknownField = { no: number; wireType: number; data: Uint8Array };
+
+type HostedFetchCall = {
+	args?: { url?: string; toolCallId?: string };
+	result?: { result?: { case?: string; value?: { content?: string; error?: string; url?: string } } };
+};
+
+function selectHostedFetchCall(
+	toolCall: { tool?: { case?: string; value?: HostedFetchCall } } | undefined,
+): HostedFetchCall | undefined {
+	const oneof = toolCall?.tool;
+	if (oneof?.case === "fetchToolCall" || oneof?.case === "webFetchToolCall") return oneof.value;
+	return undefined;
+}
+
+function hostedFetchUnknown(toolCall: object | undefined): boolean {
+	if (!toolCall) return false;
+	return (
+		protoUnknownFields(toolCall).some(field => field.no === 37) ||
+		protoUnknownFields((toolCall as { tool?: object }).tool ?? {}).some(field => field.no === 37)
+	);
+}
+
+function extractHttpUrlFromUnknown(message: object): string | undefined {
+	for (const field of protoUnknownFields(message)) {
+		const match = new TextDecoder().decode(field.data).match(/https?:\/\/[^\x00-\x1f]+/);
+		if (match) return match[0];
+	}
+	const nested = (message as { tool?: object }).tool;
+	return nested ? extractHttpUrlFromUnknown(nested) : undefined;
+}
+
+function describeHostedFetchResult(call: HostedFetchCall | undefined): { text: string; isError: boolean } {
+	const result = call?.result?.result;
+	if (result?.case === "success") {
+		return { text: result.value?.content || result.value?.url || "Fetched", isError: false };
+	}
+	if (result?.case === "error") {
+		return { text: result.value?.error || "Fetch failed", isError: true };
+	}
+	return { text: "Fetch completed", isError: false };
+}
+
+function protoUnknownFields(message: object): ProtoUnknownField[] {
+	const raw = (message as { $unknown?: ProtoUnknownField[] }).$unknown;
+	return Array.isArray(raw) ? raw : [];
+}
+
+function sendUnknownApprovedInteractionResponse(
+	h2Request: http2.ClientHttp2Stream,
+	queryId: number,
+	fieldNo: number,
+): void {
+	// `approved {}` on the matching response oneof: field 1, empty message.
+	const response = create(InteractionResponseSchema, { id: queryId });
+	(response as { $unknown?: ProtoUnknownField[] }).$unknown = [
+		{ no: fieldNo, wireType: 2, data: new Uint8Array([0x0a, 0x00]) },
+	];
+	const clientMessage = create(AgentClientMessageSchema, {
+		message: { case: "interactionResponse", value: response },
+	});
+	h2Request.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+	log("interactionResponse", "unknownApproved", { id: queryId, field: fieldNo });
+}
+
+function sendInteractionResponse(
+	h2Request: http2.ClientHttp2Stream,
+	queryId: number,
+	result: InteractionResponse["result"],
+): void {
+	const response = create(InteractionResponseSchema, { id: queryId, result });
+	const clientMessage = create(AgentClientMessageSchema, {
+		message: { case: "interactionResponse", value: response },
+	});
+	h2Request.write(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
+	log("interactionResponse", result.case, { id: queryId });
 }
 
 function handleKvServerMessage(
@@ -3905,6 +4128,28 @@ export function processInteractionUpdate(
 				output.content.push(block);
 				retainStreamedCall(state, block, update.message.value.callId);
 				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+				return;
+			}
+
+			const fetchCall = selectHostedFetchCall(toolCall);
+			if (fetchCall || hostedFetchUnknown(toolCall)) {
+				// Hosted WebFetch / Fetch is permission-gated via InteractionQuery, then
+				// run server-side. Stamp resolved so agent-loop does not try a local tool.
+				const url = fetchCall?.args?.url || extractHttpUrlFromUnknown(toolCall);
+				const callId = fetchCall?.args?.toolCallId || update.message.value.callId || crypto.randomUUID();
+				const block: ToolCallState = {
+					type: "toolCall",
+					id: callId,
+					name: "web_fetch",
+					arguments: url ? { url } : {},
+					[kStreamingBlockIndex]: output.content.length,
+					[kStreamingBlockKind]: "web-fetch",
+					[kStreamingEnvelopeId]: update.message.value.callId || undefined,
+					[kCursorExecResolved]: true,
+				};
+				output.content.push(block);
+				retainStreamedCall(state, block, update.message.value.callId);
+				stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 			}
 		}
 	} else if (updateCase === "toolCallDelta" || updateCase === "partialToolCall") {
@@ -3978,6 +4223,19 @@ export function processInteractionUpdate(
 					role: "toolResult",
 					toolCallId: settled.id,
 					toolName: "connect_scm",
+					content: [{ type: "text", text }],
+					isError,
+					timestamp: Date.now(),
+				});
+			} else if (settled[kStreamingBlockKind] === "web-fetch") {
+				const fetchCall = selectHostedFetchCall(toolCall);
+				const url = fetchCall?.args?.url || extractHttpUrlFromUnknown(toolCall ?? {});
+				if (url) settled.arguments = { url };
+				const { text, isError } = describeHostedFetchResult(fetchCall);
+				state.onToolResult?.({
+					role: "toolResult",
+					toolCallId: settled.id,
+					toolName: "web_fetch",
 					content: [{ type: "text", text }],
 					isError,
 					timestamp: Date.now(),
