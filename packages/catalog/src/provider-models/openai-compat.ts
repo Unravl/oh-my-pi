@@ -16,6 +16,7 @@ import {
 	isGrokReasoningEffortCapable,
 	isKimiK3ModelId,
 	isKimiModelId,
+	isMuseSparkModelId,
 	isQwen38PlusTemplateEffortModelId,
 	isReasoningGlmModelId,
 } from "../identity/family";
@@ -2515,6 +2516,28 @@ function openCodeModelManagerOptions(
 					mapModel: (entry, defaults) => {
 						const reference = references.get(defaults.id);
 						const name = toModelName(entry.name, reference?.name ?? defaults.name);
+						if (isMuseSparkModelId(defaults.id)) {
+							// Go /zen/go/v1/models lists these as bare ids with no
+							// capability metadata and no local bundled row, so the
+							// generic defaults would hide the effort dial
+							// (`reasoning: false`) and send completions. Pin the
+							// Responses route and the documented
+							// none/minimal/low/medium/high/xhigh surface.
+							const api = "openai-responses" as const;
+							return {
+								...(reference ?? defaults),
+								id: defaults.id,
+								name,
+								api,
+								provider: providerId,
+								baseUrl: openCodeBaseUrlForApi(api, basePath),
+								reasoning: true,
+								input: reference?.input ?? ["text", "image"],
+								thinking: reference?.thinking ?? META_MUSE_SPARK_THINKING,
+								contextWindow: toPositiveNumber(entry.context_length, reference?.contextWindow ?? 1_048_576),
+								maxTokens: toPositiveNumber(entry.max_completion_tokens, reference?.maxTokens ?? 131_072),
+							};
+						}
 						if (!reference) {
 							return {
 								...defaults,

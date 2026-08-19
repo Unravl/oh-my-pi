@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
@@ -66,6 +67,30 @@ describe("OpenCode provider discovery", () => {
 				api: "openai-responses",
 				baseUrl: "https://opencode.ai/zen/go/v1",
 			});
+		}
+	});
+
+	test("recovers muse-spark thinking levels from live OpenCode Go discovery", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-go-muse-"));
+		try {
+			const options = opencodeGoModelManagerOptions({
+				apiKey: "go-account-key",
+				fetch: async () => modelListResponse(["muse-spark-1.2", "muse-spark-1.2-contributor"]),
+			});
+			const result = await resolveProviderModels(
+				{ ...options, cacheDbPath: path.join(tempDir, "models.db") },
+				"online-if-uncached",
+			);
+			const expected = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
+			for (const id of ["muse-spark-1.2", "muse-spark-1.2-contributor"]) {
+				const model = result.models.find(item => item.id === id);
+				expect(model?.api).toBe("openai-responses");
+				expect(model?.reasoning).toBe(true);
+				expect(model?.thinking?.efforts).toEqual(expected);
+				expect(model?.thinking?.requiresEffort).toBeUndefined();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
 		}
 	});
 

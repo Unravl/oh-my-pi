@@ -5,6 +5,9 @@
 ### Added
 
 - Regenerated the Cursor agent protobufs to model hosted WebFetch permission queries (`interaction_query` / `interaction_response` field 9) and the matching `ToolCall` variant (field 37).
+### Fixed
+
+- Fixed `opencode-go/muse-spark-1.2` and `muse-spark-1.2-contributor` exposing no thinking levels. Live `/zen/go/v1/models` discovery returns bare ids with no capability metadata, and neither id has a bundled `opencode-go` row, so discovery fell back to generic defaults (`reasoning: false` on chat completions) and the effort picker stayed empty. Both ids now resolve to the Responses route with the documented Muse Spark surface (thinking-off plus `minimal`/`low`/`medium`/`high`/`xhigh`, 1M context, 131K max output, and image input), and the OpenCode model-cache namespace is bumped so rows already cached as non-reasoning are refetched.
 
 ## [17.3.8] - 2026-08-19
 
