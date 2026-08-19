@@ -3,32 +3,32 @@ import { create, fromBinary } from "@bufbuild/protobuf";
 import { type BlockState, handleServerMessage, type ToolCallState } from "@oh-my-pi/pi-ai/providers/cursor";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import type { InteractionQuery, InteractionResponse } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+
 import {
 	type AgentClientMessage,
 	AgentClientMessageSchema,
 	AgentServerMessageSchema,
 	AskQuestionInteractionQuerySchema,
 	CreatePlanRequestQuerySchema,
-	ExaFetchArgsSchema,
 	ExaFetchRequestQuerySchema,
-	ExaSearchArgsSchema,
 	ExaSearchRequestQuerySchema,
-	FetchArgsSchema,
+	type InteractionQuery,
 	InteractionQuerySchema,
+	SetupVmEnvironmentArgsSchema,
 	SwitchModeRequestQuerySchema,
-	WebFetchRequestQuerySchema,
-	WebSearchArgsSchema,
 	WebSearchRequestQuerySchema,
 } from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+
+type ProtoUnknownField = { no: number; wireType: number; data: Uint8Array };
+type ProtoUnknownBag = { $unknown?: ProtoUnknownField[] };
 
 function cursorAssistantMessage(): AssistantMessage {
 	return {
 		role: "assistant",
-		content: [],
 		api: "cursor-agent",
 		provider: "cursor",
-		model: "cursor-grok-4.6-xhigh-fast",
+		model: "cursor-composer-2.5",
+		content: [],
 		usage: {
 			input: 0,
 			output: 0,
@@ -38,11 +38,11 @@ function cursorAssistantMessage(): AssistantMessage {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
-		timestamp: 0,
+		timestamp: 1,
 	};
 }
 
-function newBlockState(): BlockState {
+function emptyBlockState(): BlockState {
 	let textBlock: BlockState["currentTextBlock"] = null;
 	let thinkingBlock: BlockState["currentThinkingBlock"] = null;
 	let toolCall: ToolCallState | null = null;
@@ -72,39 +72,26 @@ function newBlockState(): BlockState {
 	};
 }
 
-function decodeClientFrame(frame: Buffer): AgentClientMessage {
-	const length = frame.readUInt32BE(1);
-	return fromBinary(AgentClientMessageSchema, frame.subarray(5, 5 + length));
+function decodeConnectFrame(frame: Buffer): AgentClientMessage {
+	return fromBinary(AgentClientMessageSchema, frame.subarray(5));
 }
 
-function expectInteractionResponse(frames: AgentClientMessage[]): InteractionResponse {
-	expect(frames).toHaveLength(1);
-	const frame = frames[0];
-	if (frame?.message.case !== "interactionResponse") {
-		throw new Error("expected an interactionResponse frame");
-	}
-	return frame.message.value;
-}
-
-async function dispatchQuery(query: InteractionQuery): Promise<AgentClientMessage[]> {
-	const written: Buffer[] = [];
+async function dispatchQuery(query: InteractionQuery): Promise<Buffer[]> {
+	const frames: Buffer[] = [];
 	const h2Request = {
-		write: (chunk: Buffer) => {
-			written.push(chunk);
+		write(chunk: Buffer) {
+			frames.push(chunk);
 			return true;
 		},
 	} as unknown as Parameters<typeof handleServerMessage>[5];
-
+	const serverMsg = create(AgentServerMessageSchema, {
+		message: { case: "interactionQuery", value: query },
+	});
 	await handleServerMessage(
-		create(AgentServerMessageSchema, {
-			message: {
-				case: "interactionQuery",
-				value: query,
-			},
-		}),
+		serverMsg,
 		cursorAssistantMessage(),
 		new AssistantMessageEventStream(),
-		newBlockState(),
+		emptyBlockState(),
 		new Map(),
 		h2Request,
 		undefined,
@@ -112,151 +99,128 @@ async function dispatchQuery(query: InteractionQuery): Promise<AgentClientMessag
 		{ sawTokenDelta: false },
 		[],
 	);
-
-	return written.map(decodeClientFrame);
+	return frames;
 }
 
-describe("Cursor interaction queries", () => {
-	it("approves hosted web search so the turn is not left waiting on permission", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 11,
-					query: {
-						case: "webSearchRequestQuery",
-						value: create(WebSearchRequestQuerySchema, {
-							args: create(WebSearchArgsSchema, { searchTerm: "Grok Bot use cases", toolCallId: "ws-1" }),
-						}),
-					},
-				}),
-			),
+describe("cursor interaction query handshake", () => {
+	it("approves hosted web search so the Run RPC can continue", async () => {
+		const frames = await dispatchQuery(
+			create(InteractionQuerySchema, {
+				id: 11,
+				query: { case: "webSearchRequestQuery", value: create(WebSearchRequestQuerySchema, {}) },
+			}),
 		);
-		expect(response.id).toBe(11);
-		expect(response.result.case).toBe("webSearchRequestResponse");
-		if (response.result.case !== "webSearchRequestResponse") return;
-		expect(response.result.value.result.case).toBe("approved");
+		expect(frames).toHaveLength(1);
+		const client = decodeConnectFrame(frames[0]!);
+		expect(client.message.case).toBe("interactionResponse");
+		expect(client.message.value).toMatchObject({
+			id: 11,
+			result: { case: "webSearchRequestResponse", value: { result: { case: "approved" } } },
+		});
 	});
 
-	it("approves Exa fetch, the permission prompt that stalled cursor-grok-4.6-xhigh", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 12,
-					query: {
-						case: "exaFetchRequestQuery",
-						value: create(ExaFetchRequestQuerySchema, {
-							args: create(ExaFetchArgsSchema, {
-								ids: ["https://docs.x.ai/grok-bot/use-cases"],
-								toolCallId: "fetch-1",
-							}),
-						}),
-					},
-				}),
-			),
+	it("approves hosted Exa search and fetch permission queries", async () => {
+		const search = await dispatchQuery(
+			create(InteractionQuerySchema, {
+				id: 12,
+				query: { case: "exaSearchRequestQuery", value: create(ExaSearchRequestQuerySchema, {}) },
+			}),
 		);
-		expect(response.id).toBe(12);
-		expect(response.result.case).toBe("exaFetchRequestResponse");
-		if (response.result.case !== "exaFetchRequestResponse") return;
-		expect(response.result.value.result.case).toBe("approved");
+		const fetch = await dispatchQuery(
+			create(InteractionQuerySchema, {
+				id: 13,
+				query: { case: "exaFetchRequestQuery", value: create(ExaFetchRequestQuerySchema, {}) },
+			}),
+		);
+		expect(decodeConnectFrame(search[0]!).message.value).toMatchObject({
+			id: 12,
+			result: { case: "exaSearchRequestResponse", value: { result: { case: "approved" } } },
+		});
+		expect(decodeConnectFrame(fetch[0]!).message.value).toMatchObject({
+			id: 13,
+			result: { case: "exaFetchRequestResponse", value: { result: { case: "approved" } } },
+		});
 	});
 
-	it("approves Exa search", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 13,
-					query: {
-						case: "exaSearchRequestQuery",
-						value: create(ExaSearchRequestQuerySchema, {
-							args: create(ExaSearchArgsSchema, {
-								query: "Grok Bot",
-								type: "auto",
-								numResults: 5,
-								toolCallId: "es-1",
-							}),
-						}),
-					},
-				}),
-			),
-		);
-		expect(response.result.case).toBe("exaSearchRequestResponse");
-		if (response.result.case !== "exaSearchRequestResponse") return;
-		expect(response.result.value.result.case).toBe("approved");
+	it("approves unnamed field-9 permission queries used by hosted WebFetch", async () => {
+		const query = create(InteractionQuerySchema, { id: 18 });
+		const bag: ProtoUnknownBag = query; // protobuf-es unnamed query oneof (field 9)
+		bag.$unknown = [{ no: 9, wireType: 2, data: new Uint8Array([0x02, 0x0a, 0x00]) }];
+		const frames = await dispatchQuery(query);
+		expect(frames).toHaveLength(1);
+		const client = decodeConnectFrame(frames[0]!);
+		expect(client.message.case).toBe("interactionResponse");
+		if (client.message.case !== "interactionResponse") {
+			throw new Error("expected interactionResponse");
+		}
+		expect(client.message.value.id).toBe(18);
+		// The raw same-field reply must round-trip: under the current proto,
+		// field 9 is named, so a correctly length-prefixed `approved {}` payload
+		// decodes as an approved webFetchRequestResponse. A missing LEN prefix
+		// would fail this decode (regression contract for the wire framing).
+		expect(client.message.value.result).toMatchObject({
+			case: "webFetchRequestResponse",
+			value: { result: { case: "approved" } },
+		});
 	});
 
-	it("rejects ask-question instead of leaving the query unanswered", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 14,
-					query: {
-						case: "askQuestionInteractionQuery",
-						value: create(AskQuestionInteractionQuerySchema, { toolCallId: "ask-1" }),
-					},
-				}),
-			),
+	it("rejects interactive ask / switch-mode / create-plan queries", async () => {
+		const ask = decodeConnectFrame(
+			(
+				await dispatchQuery(
+					create(InteractionQuerySchema, {
+						id: 14,
+						query: { case: "askQuestionInteractionQuery", value: create(AskQuestionInteractionQuerySchema, {}) },
+					}),
+				)
+			)[0]!,
 		);
-		expect(response.result.case).toBe("askQuestionInteractionResponse");
-		if (response.result.case !== "askQuestionInteractionResponse") return;
-		expect(response.result.value.result?.result.case).toBe("rejected");
+		const mode = decodeConnectFrame(
+			(
+				await dispatchQuery(
+					create(InteractionQuerySchema, {
+						id: 15,
+						query: { case: "switchModeRequestQuery", value: create(SwitchModeRequestQuerySchema, {}) },
+					}),
+				)
+			)[0]!,
+		);
+		const plan = decodeConnectFrame(
+			(
+				await dispatchQuery(
+					create(InteractionQuerySchema, {
+						id: 16,
+						query: { case: "createPlanRequestQuery", value: create(CreatePlanRequestQuerySchema, {}) },
+					}),
+				)
+			)[0]!,
+		);
+		expect(ask.message.value).toMatchObject({
+			id: 14,
+			result: {
+				case: "askQuestionInteractionResponse",
+				value: { result: { result: { case: "rejected" } } },
+			},
+		});
+		expect(mode.message.value).toMatchObject({
+			id: 15,
+			result: { case: "switchModeRequestResponse", value: { result: { case: "rejected" } } },
+		});
+		expect(plan.message.value).toMatchObject({
+			id: 16,
+			result: { case: "createPlanRequestResponse", value: { result: { result: { case: "error" } } } },
+		});
 	});
 
-	it("rejects mode switches", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 15,
-					query: {
-						case: "switchModeRequestQuery",
-						value: create(SwitchModeRequestQuerySchema, {}),
-					},
-				}),
-			),
+	it("does not invent a VM success or a reply for an empty query", async () => {
+		const vm = await dispatchQuery(
+			create(InteractionQuerySchema, {
+				id: 19,
+				query: { case: "setupVmEnvironmentArgs", value: create(SetupVmEnvironmentArgsSchema, {}) },
+			}),
 		);
-		expect(response.result.case).toBe("switchModeRequestResponse");
-		if (response.result.case !== "switchModeRequestResponse") return;
-		expect(response.result.value.result.case).toBe("rejected");
-	});
-
-	it("errors create-plan so the server is not blocked on a plan URI", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 16,
-					query: {
-						case: "createPlanRequestQuery",
-						value: create(CreatePlanRequestQuerySchema, { toolCallId: "plan-1" }),
-					},
-				}),
-			),
-		);
-		expect(response.result.case).toBe("createPlanRequestResponse");
-		if (response.result.case !== "createPlanRequestResponse") return;
-		expect(response.result.value.result?.result.case).toBe("error");
-	});
-
-	it("approves hosted WebFetch permission queries", async () => {
-		const response = expectInteractionResponse(
-			await dispatchQuery(
-				create(InteractionQuerySchema, {
-					id: 18,
-					query: {
-						case: "webFetchRequestQuery",
-						value: create(WebFetchRequestQuerySchema, {
-							args: create(FetchArgsSchema, { url: "https://example.com", toolCallId: "fetch-2" }),
-						}),
-					},
-				}),
-			),
-		);
-		expect(response.id).toBe(18);
-		expect(response.result.case).toBe("webFetchRequestResponse");
-		if (response.result.case !== "webFetchRequestResponse") return;
-		expect(response.result.value.result.case).toBe("approved");
-	});
-
-	it("does not invent a reply for an unknown query variant", async () => {
-		const frames = await dispatchQuery(create(InteractionQuerySchema, { id: 17 }));
-		expect(frames).toHaveLength(0);
+		const empty = await dispatchQuery(create(InteractionQuerySchema, { id: 17 }));
+		expect(vm).toEqual([]);
+		expect(empty).toEqual([]);
 	});
 });

@@ -365,6 +365,45 @@ function toolResultFor(callId: string, custom = false): ToolResultMessage {
 	};
 }
 
+describe("buildOpenAiNativeHistory interleaved assistant message (#8789)", () => {
+	test("hoists a trailing text block before its tool-call batch", () => {
+		// deepseek-v4-flash on opencode-go streamed [thinking, 2 tool calls,
+		// trailing "</thinking" text]; the compaction history builder must not
+		// wedge the demoted text between the calls and their outputs.
+		const model = makeOpenAiModel({
+			id: "deepseek-v4-flash",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+		});
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "planning" },
+				{ type: "toolCall", id: "call_a|fc_call_a", name: "read", arguments: { path: "a" } },
+				{ type: "toolCall", id: "call_b|fc_call_b", name: "read", arguments: { path: "b" } },
+				{ type: "text", text: "<think>\n</thinking\n</think>" },
+			],
+			timestamp: Date.now(),
+			provider: "opencode-go",
+			model: "deepseek-v4-flash",
+			api: "openai-responses",
+			usage: ZERO_USAGE,
+			stopReason: "toolUse",
+		};
+
+		const items = buildOpenAiNativeHistory([assistant, toolResultFor("call_a"), toolResultFor("call_b")], model);
+
+		expect(items.map(item => item.type)).toEqual([
+			"message",
+			"function_call",
+			"function_call",
+			"function_call_output",
+			"function_call_output",
+		]);
+		expect(JSON.stringify(items[0]?.content)).toContain("</thinking");
+	});
+});
+
 describe("buildOpenAiNativeHistory call-id tracking", () => {
 	test("registers function_call ids carried in providerPayload so later tool results are emitted", () => {
 		const items = buildOpenAiNativeHistory(

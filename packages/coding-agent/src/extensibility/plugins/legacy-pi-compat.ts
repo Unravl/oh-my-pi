@@ -1351,12 +1351,59 @@ async function findNodePackageRootUncached(packageName: string, importerPath: st
 		if (await pathExists(path.join(candidate, "package.json"))) {
 			return candidate;
 		}
+		const workspaceMember = await findWorkspaceMemberPackageRoot(dir, packageName);
+		if (workspaceMember) {
+			return workspaceMember;
+		}
 		const parent = path.dirname(dir);
 		if (parent === dir) {
 			return null;
 		}
 		dir = parent;
 	}
+}
+
+/**
+ * Resolve `packageName` as a workspace member when `dir` is a workspace root.
+ *
+ * An installed git dependency of a monorepo plugin contains the full
+ * workspace tree but no node_modules links: `bun install` materializes a git
+ * dependency's regular npm dependencies into the host tree and skips its
+ * `workspace:*` / `file:` edges. Bare imports between workspace siblings
+ * therefore never resolve through the node_modules walk above. When a
+ * directory on that walk declares `workspaces` (array form or the yarn-style
+ * `{ packages: [...] }` object), scan the member manifests for the requested
+ * package name. node_modules candidates at the same level win, so an
+ * explicitly installed copy still shadows the workspace member.
+ */
+async function findWorkspaceMemberPackageRoot(dir: string, packageName: string): Promise<string | null> {
+	if (!(await pathExists(path.join(dir, "package.json")))) {
+		return null;
+	}
+	const manifest = await readPackageManifest(dir);
+	const rawWorkspaces = manifest?.workspaces;
+	const patterns = Array.isArray(rawWorkspaces)
+		? rawWorkspaces
+		: isRecord(rawWorkspaces) && Array.isArray(rawWorkspaces.packages)
+			? rawWorkspaces.packages
+			: null;
+	if (!patterns) {
+		return null;
+	}
+	for (const pattern of patterns) {
+		if (typeof pattern !== "string" || pattern.startsWith("!")) {
+			continue;
+		}
+		const glob = new Bun.Glob(path.join(pattern, "package.json"));
+		for await (const match of glob.scan({ cwd: dir, onlyFiles: true })) {
+			const memberRoot = path.dirname(path.join(dir, match));
+			const memberManifest = await readPackageManifest(memberRoot);
+			if (memberManifest?.name === packageName) {
+				return memberRoot;
+			}
+		}
+	}
+	return null;
 }
 
 async function readPackageManifest(packageRoot: string): Promise<Record<string, unknown> | null> {

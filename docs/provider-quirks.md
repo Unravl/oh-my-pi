@@ -450,8 +450,12 @@ Cursor's integration in `packages/ai` operates over an HTTP/2 Connect RPC transp
 - **Trailer & Transport Error Handling**:
   - Monitors HTTP/2 trailers (`grpc-status`, `grpc-message`) and maps socket or TLS disconnects using `mapH2TransportError`.
 - **Bi-Directional RPC Dispatch**:
-  - Server streams `AgentServerMessage` (`interactionUpdate`, `execServerMessage`, `kvServerMessage`).
-  - Client writes `AgentClientMessage` (`runRequest`, periodic `clientHeartbeat` every 5 seconds) and `ExecClientMessage` tool responses (`readResult`, `writeResult`, `execClientThrow`, `requestContextResult`).
+  - Server streams `AgentServerMessage` (`interactionUpdate`, `execServerMessage`, `kvServerMessage`, `interactionQuery`).
+  - Client writes `AgentClientMessage` (`runRequest`, periodic `clientHeartbeat` every 5 seconds, `interactionResponse`) and `ExecClientMessage` tool responses (`readResult`, `writeResult`, `execClientThrow`, `requestContextResult`).
+- **Interaction Query Handshake**:
+  - Hosted web search / Exa / unnamed field-9 WebFetch send `interactionQuery` and block the turn until the client writes `interactionResponse`.
+  - Heartbeats keep HTTP/2 alive but are not semantic progress; an unanswered query sits silent until the 300s idle watchdog (`Provider stream stalled while waiting for the next event`).
+  - `handleInteractionQuery` approves network permission gates and rejects interactive ask / switch-mode / create-plan. VM setup is left unanswered because its result oneof is success-only.
 - **Async Execution Drain & Turn Completion**:
   - `handleServerMessage` processes frames asynchronously so the socket continues draining. Dispatches are tracked in `inFlightDispatches` and bounded by `options.signal` abort handling before finalizing stream completion.
   - Stream completion verifies `turnEnded` (`sawTurnEnded`) or throws `incomplete-stream`.
@@ -1566,7 +1570,7 @@ xAI Grok OAuth provides subscription-backed access (SuperGrok / X Premium+) to x
 - **Usage Tracking**: `xaiOauthUsageProvider` (`packages/ai/src/usage/xai-oauth.ts`) queries `https://cli-chat-proxy.grok.com/v1/billing` (`validateXAIBillingEndpoint` pins to HTTPS `*.grok.com`) with header `X-XAI-Token-Auth: xai-grok-cli` (`getXAICliBillingHeaders`). Only accepts valid OAuth bearer credentials. Probes legacy weekly credits (`?format=credits`, `parseWeeklyBillingConfig` for `creditUsagePercent` and `productUsage`) and unified monthly quota (`parseMonthlyBillingConfig` for `monthlyLimit` and `used`), plus positive `onDemandCap` / `onDemandUsed` limits.
 
 ### Catalog model handling
-- **Curated Models & Static Seed**: `XAI_OAUTH_CURATED_MODELS` (`packages/catalog/src/provider-models/openai-compat.ts`) defines static models (`grok-build`, `grok-build-0.1`, `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-4.20-multi-agent-0309`, `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-composer-2.5-fast`) with zero cost (`cost: 0`). Default model is `grok-4.3` (`descriptors.ts`). `buildXaiOAuthStaticSeed` seeds `ModelRegistry` synchronously at boot so `modelRoles.default = "xai-oauth/<id>"` works before dynamic refresh.
+- **Curated Models & Static Seed**: `XAI_OAUTH_CURATED_MODELS` (`packages/catalog/src/provider-models/openai-compat.ts`) defines static models (`grok-build`, `grok-build-0.1`, `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-4.20-multi-agent-0309`, `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-composer-2.5-fast`) with zero cost (`cost: 0`). Default model is `grok-4.6` (`descriptors.ts`). `buildXaiOAuthStaticSeed` seeds `ModelRegistry` synchronously at boot so `modelRoles.default = "xai-oauth/<id>"` works before dynamic refresh.
 - **Dynamic Curation Overlay**: `applyXAIOAuthCuration` (`openai-compat.ts`, `xaiOAuthModelManagerOptions`) filters non-chat prefixes (`grok-imagine-`, `grok-stt-`, `grok-voice-`), overlays curated context windows (up to 2M), sets `maxTokens` equal to `contextWindow`, preserves image capabilities and reasoning flags, and injects missing curated models.
 - **Reference Resolution Exclusion**: `isZeroCostXaiOAuthCandidate` (`packages/catalog/src/identity/reference.ts`) excludes zero-cost subscription entries from reference index matching so subscription pricing and limits do not override public/paid Grok references.
 

@@ -54,6 +54,21 @@ describe("OpenCode provider discovery", () => {
 		});
 	});
 
+	test("routes opencode-go muse-spark-1.2 to the responses API (#8957)", () => {
+		const descriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === "opencode-go");
+		// The Go /zen/go/v1/models discovery drops the provider.npm hint for the
+		// muse-spark ids, so without an override they fall through to
+		// openai-completions even though the gateway only serves them at
+		// /zen/go/v1/responses. Sending completions requests closes the stream
+		// with no finish_reason on every tool-call turn.
+		for (const id of ["muse-spark-1.2", "muse-spark-1.2-contributor"]) {
+			expect(descriptor?.resolveApi?.(id, { tool_call: true })).toEqual({
+				api: "openai-responses",
+				baseUrl: "https://opencode.ai/zen/go/v1",
+			});
+		}
+	});
+
 	test("replaces stale bundled Zen models with each credential's live endpoint list", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-"));
 		try {

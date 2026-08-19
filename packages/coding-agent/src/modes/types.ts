@@ -321,6 +321,17 @@ export interface InteractiveModeContext {
 		message: AgentMessage,
 		options?: { imageLinks?: readonly (string | undefined)[] },
 	): void;
+	/** True while an optimistically-rendered `/skill:` row awaits its canonical `message_start`. */
+	optimisticSkillMessagePending: boolean;
+	/** Optimistically renders a user-invoked `/skill:` row before its awaited dispatch (issue #8895). */
+	renderOptimisticSkillMessage(
+		message: AgentMessage,
+		options?: { imageLinks?: readonly (string | undefined)[] },
+	): void;
+	/** Swaps the optimistic `/skill:` row for the canonical message emitted by the session. */
+	reconcileOptimisticSkillMessage(message: AgentMessage): void;
+	/** Drops the optimistic `/skill:` row when dispatch fails or bails before reaching the agent. */
+	clearOptimisticSkillMessage(): void;
 	isKnownSlashCommand(text: string): boolean;
 	addMessageToChat(
 		message: AgentMessage,

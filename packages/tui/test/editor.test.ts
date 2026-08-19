@@ -164,6 +164,38 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("Submit/newline keybindings", () => {
+		it("submits on Ctrl+Enter when tui.input.submit is remapped to it (#8906)", () => {
+			setKeybindings(
+				new KeybindingsManager(TUI_KEYBINDINGS, {
+					"tui.input.submit": "ctrl+enter",
+					"tui.input.newLine": "enter",
+				}),
+			);
+			const editor = new Editor(defaultEditorTheme);
+			editor.setText("hello");
+			let submitted: string | undefined;
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+			editor.handleInput("\x1b[13;5u"); // kitty CSI-u Ctrl+Enter
+			expect(submitted).toBe("hello");
+			expect(editor.getText()).toBe("");
+		});
+
+		it("still inserts a newline on Ctrl+Enter under the default bindings", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setText("hello");
+			let submitted: string | undefined;
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+			editor.handleInput("\x1b[13;5u"); // kitty CSI-u Ctrl+Enter
+			expect(submitted).toBeUndefined();
+			expect(editor.getText()).toBe("hello\n");
+		});
+	});
+
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
 			const editor = new Editor(defaultEditorTheme);
@@ -1025,7 +1057,7 @@ describe("Editor component", () => {
 				await terminal.waitForRender();
 				for (const char of "ast") editor.handleInput(char);
 				tui.requestRender();
-				await terminal.waitForRender();
+				await terminal.waitForRender(() => terminal.getViewport()[1]?.includes("ast") === true);
 
 				const beforePreedit = terminal.getViewport().map(row => row.trimEnd());
 				expect(beforePreedit.slice(0, 3)).toEqual(["+------------------+", "|  ast", "+------------------+"]);

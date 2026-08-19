@@ -1168,15 +1168,15 @@ export class SettingsSelectorComponent implements Component {
 		return entries.map(([provider, limit]) => `${provider}: ${limit}`).join(", ");
 	}
 
-	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
-		let options = def.options;
-		if (def.path === "providers.webSearchOrder") {
-			const excluded: unknown = settings.get("providers.webSearchExclude");
-			if (Array.isArray(excluded)) {
-				options = options.filter(option => !excluded.includes(option.value));
-			}
-		}
+	#getMultiSelectOptions(def: SettingDef & { type: "multiselect" }) {
+		if (def.path !== "providers.webSearchOrder") return def.options;
+		const excluded: unknown = settings.get("providers.webSearchExclude");
+		if (!Array.isArray(excluded)) return def.options;
+		return def.options.filter(option => !excluded.includes(option.value));
+	}
 
+	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
+		const options = this.#getMultiSelectOptions(def);
 		const current: unknown = settings.get(def.path);
 		const initial = Array.isArray(current)
 			? current.filter((entry): entry is string => typeof entry === "string")
@@ -1196,9 +1196,15 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#formatMultiSelectValue(def: SettingDef & { type: "multiselect" }, value: unknown): string {
-		const ids = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-		if (ids.length === 0) return def.ordered ? "default" : "none";
-		const labels = ids.map(id => def.options.find(option => option.value === id)?.label ?? id);
+		const options = this.#getMultiSelectOptions(def);
+		const labels = Array.isArray(value)
+			? value.flatMap(entry => {
+					if (typeof entry !== "string") return [];
+					const option = options.find(candidate => candidate.value === entry);
+					return option ? [option.label] : [];
+				})
+			: [];
+		if (labels.length === 0) return def.ordered ? "default" : "none";
 		return def.ordered ? labels.join(" → ") : labels.join(", ");
 	}
 

@@ -849,13 +849,18 @@ class TreeList implements Component {
 			this.#selectedIndex = Math.max(0, this.#selectedIndex - this.maxVisibleLines);
 		} else if (matchesSelectPageDown(keyData) || matchesKey(keyData, "right")) {
 			this.#selectedIndex = Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + this.maxVisibleLines);
-		} else if (matchesKey(keyData, "shift+enter") || matchesKey(keyData, "shift+return")) {
+		} else if (
+			matchesKey(keyData, "shift+enter") ||
+			matchesKey(keyData, "shift+return") ||
+			keyData === "\n" || // Shift+Enter delivered as bare LF (iTerm2 legacy mapping) — matches the composer (issue #8821)
+			keyData === "\x1b[13;2~" // Shift+Enter legacy CSI ~ form — also accepted by the composer (editor.ts:1466)
+		) {
 			// Summarize-and-switch: fork with a branch summary without the extra prompt.
 			const selected = this.#filteredNodes[this.#selectedIndex];
 			if (selected && this.onSelect) {
 				this.onSelect(selected.node.entry.id, { summarize: true });
 			}
-		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return")) {
 			const selected = this.#filteredNodes[this.#selectedIndex];
 			if (selected && this.onSelect) {
 				this.onSelect(selected.node.entry.id, { summarize: false });

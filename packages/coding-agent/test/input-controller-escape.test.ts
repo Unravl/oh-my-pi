@@ -841,7 +841,7 @@ describe("InputController escape behavior", () => {
 
 describe("InputController Council expansion behavior", () => {
 	it("keeps the Council pane on the shared Ctrl+O expansion lifecycle", () => {
-		const { ctx, editor, spies } = createContext();
+		const { ctx, spies } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupKeyHandlers();
 
@@ -855,7 +855,7 @@ describe("InputController Council expansion behavior", () => {
 	});
 
 	it("still expands an active Council when transcript tool activity is hidden", () => {
-		const { ctx, editor, spies } = createContext();
+		const { ctx, spies } = createContext();
 		ctx.hideToolActivity = true;
 		spies.hasActiveCouncil.mockReturnValue(true);
 		spies.councilPaneActive.mockReturnValue(true);
@@ -869,7 +869,7 @@ describe("InputController Council expansion behavior", () => {
 	});
 
 	it("keeps the shared lifecycle for an active Council whose pane is not on screen", () => {
-		const { ctx, editor, spies } = createContext();
+		const { ctx, spies } = createContext();
 		spies.hasActiveCouncil.mockReturnValue(true);
 		spies.councilPaneActive.mockReturnValue(false);
 		const controller = new InputController(ctx);

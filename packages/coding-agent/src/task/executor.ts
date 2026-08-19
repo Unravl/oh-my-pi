@@ -35,6 +35,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import type { MCPManager } from "../mcp/manager";
 import type { MnemopiSessionState } from "../mnemopi/state";
+import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
@@ -3246,6 +3247,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					const { session: revived } = await createAgentSession(
 						buildSubagentSessionOptions(reopened, expectedAgentRef),
 					);
+					// Re-run the executor's extension wiring on the rebuilt session.
+					// Skipping it leaves the runner pre-init, so a `tool_call` handler
+					// touching a runtime action trips the fail-closed gate and blocks
+					// every tool (including `yield`) in the revived agent (issue #8824).
+					await initializeExtensions(revived, {
+						reportSendError: (action, err) =>
+							logger.error("Extension send failed", { action, error: err.message }),
+						reportRuntimeError: err =>
+							logger.error("Extension error", { path: err.extensionPath, error: err.error }),
+					});
 					AgentRegistry.global().syncSessionStatus(id, revived);
 					installIrcWakeTurnMonitor(revived);
 					return revived;

@@ -6,7 +6,19 @@ import { daemonRuntimeDir } from "./paths";
 
 const CLIENTS_DIR = "clients";
 const BROKER_PID_FILE = "broker.pid";
-const GLOBAL_DAEMON_DIR = "global";
+/**
+ * Basename of the container holding per-project daemon scopes
+ * (`<state>/run/daemons`). {@link pruneDeadDaemonRuntimeDirs} refuses to sweep
+ * any other root so a runtime dir passed from outside the state tree cannot
+ * turn the reclaim into an rm -rf of unrelated neighbours (issue #8721).
+ */
+const DAEMONS_DIR = "daemons";
+/**
+ * Name shape of a project daemon scope: the 16-hex wyhash of the project dir
+ * produced by `getDaemonRuntimeDir`. Only entries matching this are pruned,
+ * which excludes the machine-global `global` container and any foreign dir.
+ */
+const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}$/;
 /**
  * Grace before a dead daemon runtime dir becomes prune-eligible. Guards against
  * deleting a scope whose owning omp process is mid-startup (token written, broker
@@ -118,11 +130,14 @@ async function hasLiveDaemonBroker(runtimeDir: string): Promise<boolean> {
  * Best-effort and non-throwing: a scope is deleted only when its `broker.pid`
  * is absent/dead, no live client presence remains, and it has been untouched
  * for {@link DAEMON_RUNTIME_STALE_GRACE_MS}. The caller's own `currentRuntimeDir`
- * and the machine-global daemon container are always skipped.
+ * is always skipped, and the sweep runs only inside the {@link DAEMONS_DIR}
+ * container over entries named like a {@link DAEMON_SCOPE_KEY} — so a runtime
+ * dir relocated elsewhere (e.g. the smoke test under `os.tmpdir()`) never
+ * reclaims unrelated neighbours (issue #8721).
  */
 export async function pruneDeadDaemonRuntimeDirs(currentRuntimeDir: string): Promise<void> {
 	const root = path.dirname(currentRuntimeDir);
-	if (path.basename(root) === GLOBAL_DAEMON_DIR) return;
+	if (path.basename(root) !== DAEMONS_DIR) return;
 	const current = path.resolve(currentRuntimeDir);
 	let entries: Dirent[];
 	try {
@@ -138,7 +153,7 @@ export async function pruneDeadDaemonRuntimeDirs(currentRuntimeDir: string): Pro
 	}
 	const now = Date.now();
 	for (const entry of entries) {
-		if (!entry.isDirectory() || entry.name === GLOBAL_DAEMON_DIR) continue;
+		if (!entry.isDirectory() || !DAEMON_SCOPE_KEY.test(entry.name)) continue;
 		const dir = path.join(root, entry.name);
 		if (path.resolve(dir) === current) continue;
 		try {

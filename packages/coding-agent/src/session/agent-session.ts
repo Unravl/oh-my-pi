@@ -340,6 +340,7 @@ import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./ses
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
+import { skillPromptTitleInput } from "./skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -536,6 +537,8 @@ export class AgentSession {
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
 	 *  the session cwd changes. */
 	#titleSystemPrompt: string | undefined;
+	#titleGenerationStart: (() => void) | undefined;
+	#titleGenerationInFlightFor: string | undefined;
 	#titleGenerationAbortController = new AbortController();
 	#toolChoiceQueue = new ToolChoiceQueue();
 
@@ -1015,8 +1018,13 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			setModelTemporary: (model, thinkingLevel, options) => this.setModelTemporary(model, thinkingLevel, options),
 			setActiveToolsByName: names => this.setActiveToolsByName(names),
+			setActiveToolPresentation: (toolNames, mountedToolNames) =>
+				this.setActiveToolPresentation(toolNames, mountedToolNames),
+			runToolRegistryMutation: mutation => this.runToolRegistryMutation(mutation),
 			getActiveToolNames: () => this.getActiveToolNames(),
 			getEnabledToolNames: () => this.getEnabledToolNames(),
+			getSelectedMCPToolNames: () => this.getSelectedMCPToolNames(),
+			getMountedXdevToolNames: () => this.getMountedXdevToolNames(),
 			hasBuiltInTool: name => this.hasBuiltInTool(name),
 			getPlanModeState: () => this.getPlanModeState(),
 			setPlanModeState: state => this.setPlanModeState(state),
@@ -2382,6 +2390,7 @@ export class AgentSession {
 				assistantMsg.contextSnapshot = {
 					promptTokens: calculatePromptTokens(assistantMsg.usage),
 					nonMessageTokens: this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this),
+					compactionEpoch: this.#stats.compactionEpoch,
 				};
 			}
 		}
@@ -5510,11 +5519,20 @@ export class AgentSession {
 		let keywordNotices: CustomMessage[] = [];
 		if (message.customType === SKILL_PROMPT_MESSAGE_TYPE && message.attribution === "user") {
 			const details = message.details;
+			let skillName: string | undefined;
 			let skillArgs = "";
-			if (details && typeof details === "object" && "args" in details && typeof details.args === "string") {
-				skillArgs = details.args;
+			if (details && typeof details === "object") {
+				if ("name" in details && typeof details.name === "string") skillName = details.name;
+				if ("args" in details && typeof details.args === "string") skillArgs = details.args;
 			}
 			keywordNotices = this.#createMagicKeywordNotices(skillArgs);
+			this.maybeStartTitleGeneration(
+				skillPromptTitleInput({
+					name: skillName,
+					args: skillArgs,
+					queueChipText: options?.queueChipText,
+				}),
+			);
 		}
 
 		if (options?.queueOnly) {
@@ -6599,14 +6617,31 @@ export class AgentSession {
 			this.#extensionRunner?.getCommand(
 				extensionCommandSpace === -1 ? firstMessage.slice(1) : firstMessage.slice(1, extensionCommandSpace),
 			) !== undefined;
-		if (isLocalExtensionCommand || this.sessionName || $env.PI_NO_TITLE || isLowSignalTitleInput(firstMessage)) {
+		const sessionId = this.sessionManager.getSessionId();
+		if (
+			isLocalExtensionCommand ||
+			this.sessionName ||
+			this.#titleGenerationInFlightFor === sessionId ||
+			$env.PI_NO_TITLE ||
+			isLowSignalTitleInput(firstMessage)
+		) {
 			return;
 		}
-		onStart?.();
+		this.#titleGenerationInFlightFor = sessionId;
+		try {
+			(onStart ?? this.#titleGenerationStart)?.();
+		} catch (error) {
+			if (this.#titleGenerationInFlightFor === sessionId) {
+				this.#titleGenerationInFlightFor = undefined;
+			}
+			throw error;
+		}
 		this.generateTitle(firstMessage)
 			.then(async title => {
-				// Re-check after generation so concurrent attempts cannot replace
-				// the first title that completed.
+				// Re-check after generation so a later completion cannot replace
+				// the first title, and a request from a replaced session cannot
+				// name the current one.
+				if (this.sessionManager.getSessionId() !== sessionId) return;
 				if (title && !this.sessionName) {
 					await this.sessionManager.setSessionName(title, "auto");
 				}
@@ -6617,6 +6652,11 @@ export class AgentSession {
 					reason: "uncaught-auto-title-error",
 					error: err instanceof Error ? err.message : String(err),
 				});
+			})
+			.finally(() => {
+				if (this.#titleGenerationInFlightFor === sessionId) {
+					this.#titleGenerationInFlightFor = undefined;
+				}
 			});
 	}
 
@@ -6666,6 +6706,12 @@ export class AgentSession {
 	 *  against the destination project's override. */
 	setTitleSystemPrompt(prompt: string | undefined): void {
 		this.#titleSystemPrompt = prompt;
+	}
+
+	/** Install the interactive title-download UI hook. Used when `/skill:` starts
+	 *  titling from {@link promptCustomMessage} without the input-controller callback. */
+	setTitleGenerationStart(handler: (() => void) | undefined): void {
+		this.#titleGenerationStart = handler;
 	}
 
 	/**

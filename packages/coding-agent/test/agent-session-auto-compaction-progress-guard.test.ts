@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import { type CompactionPreparation, resolveThresholdTokens, shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -504,6 +505,75 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(0);
+	});
+
+	it("rejects a stale pre-compaction anchor that lands past the rebase cutoff", async () => {
+		// Regression (#8887): after a mid-run compaction rebases the in-flight
+		// snapshot, an in-flight provider response whose request was assembled
+		// BEFORE the compaction lands past the rebase cutoff carrying
+		// pre-compaction usage. getContextBreakdown used message position as a
+		// freshness proxy (anchorIndex >= cutoffCount), so that stale anchor
+		// out-ranked the rebased estimate and reported a ~2.6x phantom overflow —
+		// tripping the "freed too little context" guard / frame-rescue path.
+		seedPriorTurns();
+		activateOngoingGoal("stale-anchor");
+		const gate = Promise.withResolvers<void>();
+		const firstPromptCall = Promise.withResolvers<void>();
+		vi.spyOn(session.agent, "prompt").mockImplementation(() => {
+			firstPromptCall.resolve();
+			return gate.promise as never;
+		});
+		vi.spyOn(session.agent, "continue").mockResolvedValue();
+
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") onCompactionDone();
+		});
+
+		// Hold a request in flight so the pending snapshot survives the compaction.
+		const inFlight = session.prompt("x".repeat(600_000));
+		await firstPromptCall.promise;
+
+		// Mid-run compaction fires and rebases the pending snapshot to the summary.
+		const trigger = highUsageAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: trigger });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [trigger] });
+		await compactionDone;
+
+		const rebasedTokens = session.getContextBreakdown()?.usedTokens ?? 0;
+		expect(rebasedTokens).toBeLessThan(50_000);
+		// The trigger was persisted before the compaction, so its snapshot carries
+		// the pre-compaction epoch — the exact stamp a real in-flight response has.
+		const preCompactionEpoch = (trigger as AssistantMessage).contextSnapshot?.compactionEpoch ?? 0;
+
+		const staleAnchor = {
+			role: "assistant",
+			content: [{ type: "text", text: "stale in-flight response" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 360000,
+				output: 500,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 360500,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			contextSnapshot: { promptTokens: 360000, nonMessageTokens: 100, compactionEpoch: preCompactionEpoch },
+			timestamp: Date.now() + 1,
+		} as AssistantMessage;
+		sessionManager.appendMessage(staleAnchor);
+		session.agent.replaceMessages([...session.agent.state.messages, staleAnchor]);
+
+		// Freshness marker rejects the stale anchor: usage tracks the rebased
+		// estimate, not the ~360k pre-compaction figure.
+		expect(session.getContextBreakdown()?.usedTokens ?? 0).toBeLessThan(50_000);
+
+		gate.resolve();
+		await inFlight.catch(() => {});
+		await session.waitForIdle();
 	});
 	/**
 	 * Seed several large prior turns into the session branch so `prepareCompaction`

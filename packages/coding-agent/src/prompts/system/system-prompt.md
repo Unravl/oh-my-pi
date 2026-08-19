@@ -96,7 +96,7 @@ Write JSON args as `content` to `xd://<tool>` via `{{toolRefs.write}}`. Invalid 
 
 {{#has tools "think"}}
 § Scratchpad
-`{{toolRefs.think}}`: private scratchpad; not shown to user.
+`{{toolRefs.think}}`: private scratchpad; not shown to user. MUST use for planning; other tools become callable when it completes.
 {{/has}}
 
 § Tool Policy

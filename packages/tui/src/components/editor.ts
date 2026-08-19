@@ -1458,14 +1458,19 @@ export class Editor implements Component, Focusable {
 				this.#addNewLine();
 			}
 		}
-		// New line
+		// New line. A key the user explicitly bound to `tui.input.submit` wins
+		// over these hardcoded newline fallbacks, so Ctrl/Shift+Enter can be
+		// remapped to submit (#8906). The bare-LF case is exempt: its canonical
+		// form is "enter" (indistinguishable from plain Enter), so gating it
+		// would hijack the default Enter=submit binding.
 		else if (
-			(data.charCodeAt(0) === 10 && data.length > 1) || // Ctrl+Enter with modifiers
-			matchesKey(data, "ctrl+enter") || // Ctrl+Enter (Kitty/modifyOtherKeys, including lock bits/keypad Enter)
-			data === "\x1b\r" || // Option+Enter in some terminals (legacy)
-			data === "\x1b[13;2~" || // Shift+Enter in some terminals (legacy format)
-			kb.matchesCanonical(canonical, "tui.input.newLine") || // Shift+Enter (Kitty protocol, handles lock bits)
-			(data.length > 1 && data.includes("\x1b") && data.includes("\r")) ||
+			(!kb.matchesCanonical(canonical, "tui.input.submit") &&
+				((data.charCodeAt(0) === 10 && data.length > 1) || // Ctrl+Enter with modifiers
+					matchesKey(data, "ctrl+enter") || // Ctrl+Enter (Kitty/modifyOtherKeys, including lock bits/keypad Enter)
+					data === "\x1b\r" || // Option+Enter in some terminals (legacy)
+					data === "\x1b[13;2~" || // Shift+Enter in some terminals (legacy format)
+					kb.matchesCanonical(canonical, "tui.input.newLine") || // Shift+Enter (Kitty protocol, handles lock bits)
+					(data.length > 1 && data.includes("\x1b") && data.includes("\r")))) ||
 			(data === "\n" && data.length === 1) // Shift+Enter from iTerm2 mapping
 		) {
 			if (this.#shouldSubmitOnBackslashEnter(data, kb)) {

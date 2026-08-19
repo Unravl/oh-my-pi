@@ -172,6 +172,8 @@ Valid rule approvals are `allow`, `prompt`, and `deny`. Critical bash commands s
 
 Matching is asymmetric so that rules mean what they appear to: `deny` and `prompt` rules fire when the glob matches the whole command **or any single segment** of a compound line (split on `&&`, `||`, `;`, `|`, a single `&`, subshells, and newlines), so `match: "rm -rf *"` still denies `cd /tmp && rm -rf build` and `sleep 1 & rm -rf build`. `allow` rules must match the **entire** command and never apply to a compound line, so a narrow allow such as `match: "git *"` cannot vouch for `git status && rm -rf /`.
 
+`bash.patterns` gates the `bash` tool only. It does not cover shells started through `eval`, which can spawn one via subprocess, so a `deny` rule here is bypassed when the same command runs through `eval`. To close that path, add a `tools.approval.eval` policy (`prompt` or `deny`) as well; see [Tool approval mode](./approval-mode.md).
+
 ### Bash interceptor patterns
 
 `bashInterceptor` is separate from `bash.patterns`: it redirects Bash commands to dedicated tools rather than defining whether a command may execute. Enable it explicitly and configure regular-expression patterns with a replacement tool and a model-facing message:
@@ -762,6 +764,7 @@ providers:
   openaiWebsockets: auto
   openrouterVariant: default
   kimiApiFormat: auto
+  cacheRetention: auto
   maxInFlightRequests:
     anthropic: 2
 
@@ -793,6 +796,7 @@ searxng:
 | `providers.openaiWebsockets`        | enum    | `auto`    | `auto`, `off`, `on`.                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `providers.openrouterVariant`       | enum    | `default` | `default`, `nitro`, `floor`, `online`, `exacto`.                                                                                                                                                                                                                                                                                                                                                                                       |
 | `providers.kimiApiFormat`           | enum    | `auto`    | `auto`, `openai`, `anthropic`. `auto` follows live model metadata.                                                                                                                                                                                                                                                                                                                                                                     |
+| `providers.cacheRetention`          | enum    | `auto`    | `auto`, `short`, `long`, `none`. Prompt-cache retention forwarded to providers that support it. `auto` keeps provider defaults (Anthropic: 5m entries + idle keep-alive refreshes) and honors `PI_CACHE_RETENTION`; `short` forces 5m; `long` uses 1h TTLs where supported and disables keep-alive refreshes; `none` disables prompt caching and cache-affinity routing.                                                                 |
 | `provider.appendOnlyContext`        | enum    | `auto`    | `auto`, `on`, `off`.                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `exa.enabled`                       | boolean | `true`    | Enable Exa integration.                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `exa.enableSearch`                  | boolean | `true`    | Exa search.                                                                                                                                                                                                                                                                                                                                                                                                                            |

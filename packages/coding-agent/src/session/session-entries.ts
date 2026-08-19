@@ -171,7 +171,6 @@ declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
 		credentialPin: CredentialPinEntry;
-		resetBoundary: ResetBoundaryEntry;
 	}
 }
 

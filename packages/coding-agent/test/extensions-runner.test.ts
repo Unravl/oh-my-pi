@@ -761,6 +761,80 @@ describe("ExtensionRunner", () => {
 			expect(errors[0]?.event).toBe("after_provider_response");
 			expect(errors[0]?.error).toContain("response failed");
 		});
+
+		it("exposes the response model instead of the primary session model", async () => {
+			const primaryModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+			const requestModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!primaryModel || !requestModel) throw new Error("Expected bundled cross-provider models to exist");
+
+			const eventsPath = path.join(tempDir.path(), "after-provider-response-model.jsonl");
+			const extCode = `
+				import * as fs from "node:fs";
+
+				export default function(pi) {
+					pi.on("after_provider_response", async (_event, ctx) => {
+						const current = ctx.models.current();
+						fs.appendFileSync(
+							${JSON.stringify(eventsPath)},
+							JSON.stringify({
+								model: ctx.model && { provider: ctx.model.provider, id: ctx.model.id },
+								current: current && { provider: current.provider, id: current.id },
+							}) + "\\n",
+						);
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "after-response-model.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			runner.initialize(
+				{
+					sendMessage: () => {},
+					sendUserMessage: () => {},
+					appendEntry: () => {},
+					setLabel: () => {},
+					getActiveTools: () => [],
+					getAllTools: () => [],
+					setActiveTools: async () => {},
+					getCommands: () => [],
+					setModel: async () => false,
+					getThinkingLevel: () => undefined,
+					setThinkingLevel: () => {},
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+				},
+				{
+					getModel: () => primaryModel,
+					isIdle: () => true,
+					abort: () => {},
+					hasPendingMessages: () => false,
+					shutdown: () => {},
+					getContextUsage: () => undefined,
+					compact: async () => {},
+					getSystemPrompt: () => [],
+				},
+			);
+
+			await runner.emitAfterProviderResponse(
+				{ status: 402, headers: {}, requestId: "req_402", metadata: { provider: requestModel.provider } },
+				requestModel,
+			);
+
+			const expected = { provider: requestModel.provider, id: requestModel.id };
+			const events = fs
+				.readFileSync(eventsPath, "utf8")
+				.trim()
+				.split("\n")
+				.map(line => JSON.parse(line));
+			expect(events).toEqual([{ model: expected, current: expected }]);
+		});
 	});
 
 	describe("session_stop", () => {
@@ -3739,6 +3813,8 @@ describe("ExtensionRunner", () => {
 				handlers: new Map([["input", [async (...args: unknown[]) => handler(args[0] as InputEvent)]]]),
 				tools: new Map(),
 				assistantThinkingRenderers: [],
+				fileWriteFallbackHandlers: [],
+				fileDeleteFallbackHandlers: [],
 				messageRenderers: new Map(),
 				commands: new Map(),
 				flags: new Map(),

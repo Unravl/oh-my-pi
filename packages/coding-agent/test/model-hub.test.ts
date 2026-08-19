@@ -772,6 +772,35 @@ describe("ModelHub", () => {
 			expect(onFallbackChainChange).toHaveBeenLastCalledWith("default", ["test/model-b"]);
 		});
 
+		test("windows the roles list so model-keyed chains past the panel height stay reachable", () => {
+			const settings = Settings.isolated({
+				// Model-keyed chains sort alphabetically; the unique tail key lands last.
+				"retry.fallbackChains": {
+					"aa-provider/head-chain": ["x/y"],
+					"mm-provider/mid-chain": ["x/y"],
+					"zz-provider/tail-chain-marker": ["x/y"],
+				},
+			});
+			// A short terminal makes the built-in roles alone fill the panel, so the
+			// model-keyed chains that follow the separator land below the fold. The
+			// chain keys are not available models, so no role auto-assignment leaks
+			// their names into the visible role rows.
+			const { hub } = createHub({ models: [makeModel("test", "solo")], settings, terminalRows: 16 });
+
+			enterRolesView(hub);
+			const top = normalize(hub.render(120));
+			// The alphabetically last model-keyed chain is clipped, but the panel
+			// now advertises the hidden rows instead of dropping them silently.
+			expect(top).not.toContain("tail-chain-marker");
+			expect(top).toContain("more");
+
+			// Wrapping up from the top row lands on the trailing "+ New fallback…"
+			// row; the window scrolls to the bottom and reveals the clipped chain.
+			hub.handleInput(UP);
+			const bottom = normalize(hub.render(120));
+			expect(bottom).toContain("tail-chain-marker");
+		});
+
 		test("clicking a roles row hits the row under the pointer", () => {
 			const a = makeModel("test", "model-a");
 			const { hub } = createHub({ models: [a], scoped: true });

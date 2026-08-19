@@ -477,7 +477,9 @@ export class SessionMaintenance {
 		const config = this.#withPlanProtection({
 			...(opts.config ?? AGGRESSIVE_SHAKE_CONFIG),
 			// Skip entries summarized away by the latest compaction — shaking them
-			// only churns persisted history with no prompt/cache effect.
+			// only churns persisted history with no prompt/cache effect. The cut is
+			// unconditional on the wire (see `buildSessionContext`), so a compaction
+			// the active model cannot replay still hides its prefix from the prompt.
 			keepBoundaryId: latestCompaction?.firstKeptEntryId,
 		});
 		const regions = collectShakeRegions(branchEntries, config);
@@ -2729,9 +2731,16 @@ export class SessionMaintenance {
 							}
 
 							const retryAfterMs = this.#host.parseRetryAfterMsFromError(message);
+							// An input the summarizer cannot fit is deterministic: the same
+							// prompt fails identically every attempt, so the retry budget is
+							// pure latency and the next candidate (a larger window) is the
+							// only move that can succeed. Overflow therefore vetoes the
+							// transient/usage-limit arms, which a provider blob can trip on
+							// coincidence alone.
 							const shouldRetry =
 								retrySettings.enabled &&
 								attempt < retrySettings.maxRetries &&
+								!AIError.is(id, AIError.Flag.ContextOverflow) &&
 								(retryAfterMs !== undefined ||
 									AIError.is(id, AIError.Flag.Transient) ||
 									AIError.is(id, AIError.Flag.UsageLimit));

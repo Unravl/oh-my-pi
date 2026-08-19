@@ -166,7 +166,13 @@ function shellBuiltinsDisabled(settings: Settings): boolean {
  */
 export const CRITICAL_BASH_PATTERNS = [
 	// Recursive destruction.
-	/\brm\s+-[a-z]*[rRfF][a-z]*\s+\//i, // rm -rf /, rm -fr /, rm -r /, rm -f /…
+	// Options may sit on either side of the recursive/force flag, so only that flag is pinned and
+	// any other options are skipped: `rm -rf /`, `rm -rf -- /`, `rm --recursive --force /`,
+	// `rm -rf -v /`, `rm -v -rf /`. An absolute target is still required.
+	/\brm\s+(?:-\S+\s+)*(?:-[a-z]*[rRfF][a-z]*|--recursive|--force)\s+(?:-\S+\s+)*\//i,
+	// `--no-preserve-root` defeats coreutils' own refusal to recurse on `/`, so it is critical
+	// wherever it appears — including forms this list would otherwise reach only via the target.
+	/\brm\s+(?:-\S+\s+)*--no-preserve-root\b/i,
 	/\bsudo\s+rm\b/i, // any `sudo rm`.
 	/\bchmod\s+-R\s+[0-7]+\s+\//i, // `chmod -R 777 /`.
 	/\bchmod\s+-R\s+[ugoa+\-=rwxXst,]+\s+\//, // `chmod -R u+x /`, `chmod -R u+rwx,o+w /etc` (symbolic mode, root target).
