@@ -106,6 +106,7 @@ import {
 	resolveOpenAICompletionsOutputClamp,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
+	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
@@ -1689,6 +1690,10 @@ function buildParams(
 		// that function in `tools`. Active-tool filtering normally enforces this
 		// before provider dispatch; this guard keeps raw provider callers from
 		// emitting a self-inconsistent OpenAI-compatible payload.
+		delete params.tool_choice;
+	}
+
+	if (shouldDropAutoToolChoiceForReasoning(model, initialCompat, params.tool_choice, options)) {
 		delete params.tool_choice;
 	}
 

@@ -1,4 +1,3 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -332,6 +331,9 @@ export class InputController {
 				return;
 			}
 			if (this.ctx.hasActiveOmfg() && this.ctx.handleOmfgEscape()) {
+				return;
+			}
+			if (this.ctx.hasActiveCleanse() && this.ctx.handleCleanseEscape()) {
 				return;
 			}
 
@@ -2089,25 +2091,6 @@ export class InputController {
 		this.ctx.showStatus(`Thinking blocks: ${this.ctx.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
-	#getEditorTerminalPath(): string | null {
-		if (process.platform === "win32") {
-			return null;
-		}
-		return "/dev/tty";
-	}
-
-	async #openEditorTerminalHandle(): Promise<fs.FileHandle | null> {
-		const terminalPath = this.#getEditorTerminalPath();
-		if (!terminalPath) {
-			return null;
-		}
-		try {
-			return await fs.open(terminalPath, "r+");
-		} catch {
-			return null;
-		}
-	}
-
 	async openExternalEditor(): Promise<void> {
 		const editorCmd = getEditorCommand();
 		if (!editorCmd) {
@@ -2117,16 +2100,9 @@ export class InputController {
 
 		const currentText = this.ctx.editor.getExpandedText?.() ?? this.ctx.editor.getText();
 
-		let ttyHandle: fs.FileHandle | null = null;
 		try {
-			ttyHandle = await this.#openEditorTerminalHandle();
 			this.ctx.ui.stop();
-
-			const stdio: [number | "inherit", number | "inherit", number | "inherit"] = ttyHandle
-				? [ttyHandle.fd, ttyHandle.fd, ttyHandle.fd]
-				: ["inherit", "inherit", "inherit"];
-
-			const result = await openInEditor(editorCmd, currentText, { extension: ".omp.md", stdio });
+			const result = await openInEditor(editorCmd, currentText, { extension: ".omp.md" });
 			if (result !== null) {
 				this.ctx.editor.setText(result);
 			}
@@ -2135,10 +2111,6 @@ export class InputController {
 				`Failed to open external editor: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		} finally {
-			if (ttyHandle) {
-				await ttyHandle.close();
-			}
-
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
 		}

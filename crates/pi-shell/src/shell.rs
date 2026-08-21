@@ -3268,6 +3268,7 @@ mod tests {
 			"base64",
 			"basename",
 			"cat",
+			"cksum",
 			"cmp",
 			"combine",
 			"comm",
@@ -4513,7 +4514,7 @@ mod tests {
 		.expect("process substitution should not hang");
 
 		assert_eq!(result.exit_code, Some(1));
-		assert!(output.contains("-a\n+b\n"), "diff output missing changed lines: {output:?}");
+		assert!(output.contains("< a\n---\n> b\n"), "diff output missing changed lines: {output:?}");
 	}
 
 	#[cfg(unix)]

@@ -182,8 +182,33 @@ describe("subagent HUD lines", () => {
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", task: "Investigate flaky CI on macOS" }) }),
 		]);
 		expect(fromTask).toContain("Worker Investigate flaky CI on macOS");
-	});
 
+		const multiLineTask = render([
+			makeSession({
+				id: "ReviewShell",
+				agent: "scout",
+				progress: makeProgress({
+					id: "ReviewShell",
+					agent: "scout",
+					task: "Complete assignment thoroughly:\n\n# Target\nFiles: src/foo.ts",
+				}),
+			}),
+		]);
+		expect(multiLineTask).toContain("ReviewShell");
+		expect(multiLineTask).toContain("Complete assignment thoroughly: ↵ # Tar");
+		expect(multiLineTask).not.toContain("\n# Target");
+
+		const multiLineDesc = render([
+			makeSession({
+				id: "ReviewShell",
+				agent: "scout",
+				description: "First line\n\nSecond line",
+			}),
+		]);
+		expect(multiLineDesc).toContain("ReviewShell");
+		expect(multiLineDesc).toContain("First line ↵ Second line");
+		expect(multiLineDesc).not.toContain("\nSecond line");
+	});
 	it("hides non-detached spawns: sync task calls and eval agent() helpers", () => {
 		// Sync task spawn (parent blocked on the call) and eval `agent()` spawn
 		// (no detached flag at all) both stay off the HUD.

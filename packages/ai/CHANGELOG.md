@@ -5,6 +5,33 @@
 ### Fixed
 
 - Fixed `cursor-agent` streams stalling with "Provider stream stalled while waiting for the next event" when Cursor asked the client to approve a hosted WebFetch / web search (reproduced on `cursor-grok-4.6-xhigh` after "I'll fetch the page…"). Those `interaction_query` frames — including the newer WebFetch field 9 this proto did not name — were dropped, so the server waited forever and the idle watchdog aborted a live connection. Permission queries are now answered; hosted search/fetch is approved, unnamed permission fields get an `approved` reply on the same field number, and prompts this client cannot serve are rejected so the turn can continue.
+### Added
+
+- Added Codex Responses support for Code Mode, preserving tool modes and passing tool namespace metadata during sessions.
+
+### Fixed
+
+- Fixed OpenAI Codex requests failing with HTTP 401 data residency errors on enterprise ChatGPT workspaces when connecting from a different region via VPN or proxy.
+- Fixed concurrent xAI OAuth token refreshes revoking shared credentials across multiple processes.
+- Fixed Amazon Bedrock Converse multi-turn conversations failing on models like Amazon Nova due to unsigned reasoning content in replayed turns.
+- Fixed Antigravity OAuth login handling for project discovery and free-tier onboarding against Cloud Code Assist endpoints.
+- Fixed provider-detected OAuth access token expiration terminating active turns instead of automatically refreshing credentials and replaying the request.
+- Fixed compatibility issues with OpenAI-compatible servers (such as NInfer and vLLM) rejecting `reasoning_effort` inside `chat_template_kwargs`.
+- Fixed Google Cloud Code Assist and Antigravity rejecting MCP tool schemas with unsupported annotations (`x-mcp-header`, `deprecated`, `readOnly`, `writeOnly`, `$comment`).
+- Fixed Cursor provider issues with native file edit streaming (`editToolCall`) and ensuring always-apply system rules are properly preserved.
+- Fixed Cursor HTTP/2 requests ignoring standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`).
+
+## [17.4.0] - 2026-08-20
+
+### Added
+
+- Added model metadata fields (`context_length`, `max_output_tokens`, `input_modalities`, etc.) to auth gateway model listing responses
+
+### Fixed
+
+- Fixed tool-argument repair applying lossy transformations (such as stringifying objects or stripping unrecognized keys) when validating union schemas (`anyOf`/`oneOf`), preventing corrupted tool call and subagent payloads
+- Fixed 400 errors when communicating with local OpenAI-compatible inference servers that reject `chat_template_kwargs.reasoning_effort` by improving reasoning effort parameter fallback and compatibility handling
+- Fixed DeepSeek-family models on hosts like Fireworks losing reasoning whenever tools were offered: a redundant `tool_choice: "auto"` is now omitted so the provider keeps thinking enabled; forced and `"none"` selectors still take priority ([#1207](https://github.com/can1357/oh-my-pi/issues/1207))
 
 ## [17.3.8] - 2026-08-19
 

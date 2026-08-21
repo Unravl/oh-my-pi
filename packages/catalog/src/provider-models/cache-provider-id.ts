@@ -48,7 +48,7 @@ export function resolveModelCacheProviderId(providerId: string, options: ModelCa
 			return "cursor:max-mode-v3";
 		case "litellm": {
 			const baseUrl = options.baseUrl ?? getDefaultModelDiscoveryBaseUrl(providerId)!;
-			return `litellm:rich-v5:${Bun.hash(baseUrl).toString(36)}`;
+			return `litellm:rich-v6:${Bun.hash(baseUrl).toString(36)}`;
 		}
 		case "opencode-go":
 		case "opencode-zen": {

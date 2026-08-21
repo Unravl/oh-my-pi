@@ -1,8 +1,8 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	calculatePromptTokens,
-	estimateTokens,
-	hasContextTokenUsage,
+	findTranscriptUsageAnchor,
+	isTranscriptUsageAnchor,
 	type SessionMessageEntry,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model, ProviderResponseMetadata, Usage } from "@oh-my-pi/pi-ai";
@@ -54,6 +54,30 @@ export class SessionStatsTracker {
 
 	constructor(host: SessionStatsTrackerHost) {
 		this.#host = host;
+	}
+
+	get #tokenizer() {
+		return this.#host.agent.tokenizer;
+	}
+
+	/**
+	 * Anchored used-token arithmetic shared by every anchored branch: provider
+	 * base + non-message growth since the anchor + local tail + pending.
+	 */
+	#anchoredUsedTokens(
+		base: number,
+		anchorNonMessageTokens: number,
+		currentNonMessageTokens: number,
+		tailFromIndex: number,
+		activeMessages: readonly AgentMessage[],
+		pendingTokens: number,
+	): number {
+		return (
+			base +
+			Math.max(0, currentNonMessageTokens - anchorNonMessageTokens) +
+			this.#tokenizer.countMessages(activeMessages.slice(tailFromIndex)) +
+			pendingTokens
+		);
 	}
 
 	/** Returns aggregate message, token, and cost statistics for the session. */
@@ -128,31 +152,25 @@ export class SessionStatsTracker {
 		const contextWindow = Number.isFinite(rawContextWindow) && rawContextWindow > 0 ? rawContextWindow : 0;
 		const { skillsTokens, toolsTokens, systemContextTokens, systemPromptTokens } = computeNonMessageBreakdown(
 			this.#host.session,
+			this.#tokenizer,
 		);
 		const categoryNonMessageTokens = skillsTokens + toolsTokens + systemContextTokens + systemPromptTokens;
-		const currentNonMessageTokens = computeNonMessageTokens(this.#host.session);
+		const currentNonMessageTokens = computeNonMessageTokens(this.#host.session, this.#tokenizer);
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		let usedTokens = 0;
 		let anchored = false;
 		const pendingMessages = options?.pendingMessages ?? [];
+		const pendingTokens = this.#tokenizer.countMessages(pendingMessages);
 		const pending = this.#pendingContextSnapshot;
 
 		let anchorEntry: SessionMessageEntry | undefined;
 		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
 			const entry = branchEntries[index];
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			const assistant = entry.message;
-			if (
-				assistant.stopReason !== "aborted" &&
-				assistant.stopReason !== "error" &&
-				assistant.usage &&
-				hasContextTokenUsage(assistant.usage)
-			) {
-				anchorEntry = entry;
-				break;
-			}
+			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
+			anchorEntry = entry;
+			break;
 		}
 
 		const activeMessages = this.#host.agent.state.messages;
@@ -175,67 +193,49 @@ export class SessionStatsTracker {
 			anchorIndex !== -1 &&
 			(!pending || (anchorIndex >= pending.cutoffCount && anchorEpoch >= pending.epoch));
 		if (useAnchor && anchorAssistant) {
-			const promptTokens = correctedPromptTokens(anchorAssistant);
 			const nonMessageTokens =
-				anchorAssistant.contextSnapshot?.nonMessageTokens ?? computeNonMessageTokens(this.#host.session);
+				anchorAssistant.contextSnapshot?.nonMessageTokens ??
+				computeNonMessageTokens(this.#host.session, this.#tokenizer);
 			anchored = true;
-			let tailTokens = 0;
-			for (let index = anchorIndex + 1; index < activeMessages.length; index++) {
-				tailTokens += estimateTokens(activeMessages[index]);
-			}
-			usedTokens =
-				promptTokens +
-				Math.max(0, currentNonMessageTokens - nonMessageTokens) +
-				tailTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			usedTokens = this.#anchoredUsedTokens(
+				correctedPromptTokens(anchorAssistant),
+				nonMessageTokens,
+				currentNonMessageTokens,
+				anchorIndex + 1,
+				activeMessages,
+				pendingTokens,
+			);
 		} else if (pending) {
 			anchored = true;
-			let tailTokens = 0;
-			for (let index = pending.cutoffCount; index < activeMessages.length; index++) {
-				tailTokens += estimateTokens(activeMessages[index]);
-			}
-			usedTokens =
-				pending.promptTokens +
-				Math.max(0, currentNonMessageTokens - pending.nonMessageTokens) +
-				tailTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			usedTokens = this.#anchoredUsedTokens(
+				pending.promptTokens,
+				pending.nonMessageTokens,
+				currentNonMessageTokens,
+				pending.cutoffCount,
+				activeMessages,
+				pendingTokens,
+			);
 		}
 
 		if (!anchored && !pending && branchEntries.length === 0) {
-			for (let index = activeMessages.length - 1; index >= 0; index--) {
-				const message = activeMessages[index];
-				if (
-					message.role !== "assistant" ||
-					message.stopReason === "aborted" ||
-					message.stopReason === "error" ||
-					!message.usage ||
-					!hasContextTokenUsage(message.usage)
-				) {
-					continue;
-				}
-				const promptTokens = correctedPromptTokens(message);
+			const liveAnchor = findTranscriptUsageAnchor(activeMessages);
+			if (liveAnchor) {
 				const nonMessageTokens =
-					message.contextSnapshot?.nonMessageTokens ?? computeNonMessageTokens(this.#host.session);
-				let tailTokens = 0;
-				for (let tailIndex = index + 1; tailIndex < activeMessages.length; tailIndex++) {
-					tailTokens += estimateTokens(activeMessages[tailIndex]);
-				}
-				usedTokens =
-					promptTokens +
-					Math.max(0, currentNonMessageTokens - nonMessageTokens) +
-					tailTokens +
-					pendingMessages.reduce((sum, pendingMessage) => sum + estimateTokens(pendingMessage), 0);
+					liveAnchor.message.contextSnapshot?.nonMessageTokens ??
+					computeNonMessageTokens(this.#host.session, this.#tokenizer);
+				usedTokens = this.#anchoredUsedTokens(
+					correctedPromptTokens(liveAnchor.message),
+					nonMessageTokens,
+					currentNonMessageTokens,
+					liveAnchor.index + 1,
+					activeMessages,
+					pendingTokens,
+				);
 				anchored = true;
-				break;
 			}
 		}
 		if (!anchored) {
-			let messagesTokens = 0;
-			for (const message of activeMessages) messagesTokens += estimateTokens(message);
-			usedTokens =
-				currentNonMessageTokens +
-				messagesTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			usedTokens = currentNonMessageTokens + this.#tokenizer.countMessages(activeMessages) + pendingTokens;
 		}
 		return {
 			contextWindow,
@@ -296,21 +296,13 @@ export class SessionStatsTracker {
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		for (let index = branchEntries.length - 1; index > compactionIndex; index--) {
 			const entry = branchEntries[index];
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			if (entry.type !== "message" || !isTranscriptUsageAnchor(entry.message)) continue;
 			const assistant = entry.message;
-			if (
-				assistant.stopReason === "aborted" ||
-				assistant.stopReason === "error" ||
-				!assistant.usage ||
-				!hasContextTokenUsage(assistant.usage)
-			) {
-				continue;
-			}
 
 			if (!assistant.contextSnapshot) {
 				assistant.contextSnapshot = {
 					promptTokens: calculatePromptTokens(assistant.usage),
-					nonMessageTokens: computeNonMessageTokens(this.#host.session),
+					nonMessageTokens: computeNonMessageTokens(this.#host.session, this.#tokenizer),
 					compactionEpoch: this.#compactionEpoch,
 				};
 			}
@@ -331,10 +323,10 @@ export class SessionStatsTracker {
 	rebaseAfterCompaction(): void {
 		this.#compactionEpoch++;
 		if (!this.#pendingContextSnapshot) return;
-		const nonMessageTokens = computeNonMessageTokens(this.#host.session);
+		const nonMessageTokens = computeNonMessageTokens(this.#host.session, this.#tokenizer);
 		const messages = this.#host.agent.state.messages;
 		this.setPendingSnapshot({
-			promptTokens: nonMessageTokens + messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+			promptTokens: nonMessageTokens + this.#tokenizer.countMessages(messages),
 			nonMessageTokens,
 			cutoffCount: messages.length,
 		});

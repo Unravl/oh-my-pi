@@ -905,7 +905,7 @@ export function createSubagentSettings(
 	return Settings.isolated(
 		{
 			...snapshot,
-			// Async jobs and bash auto-backgrounding are inherited from the parent:
+			// Async jobs and bash/eval auto-backgrounding are inherited from the parent:
 			// background jobs are owner-routed to the subagent's own session, and
 			// the run driver's quiescence barrier + teardown reap guarantee no
 			// owner job outlives the run, so worktree capture/cleanup stays
@@ -3291,7 +3291,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			session.sessionManager.appendSessionInit({
 				systemPrompt: session.agent.state.systemPrompt.join("\n\n"),
 				task,
-				tools: session.getActiveToolNames(),
+				tools: session.getEnabledToolNames(),
 				agent: agent.name,
 				modelRole: modelRole ?? resolveExplicitModelRole(modelOverride ?? agent.model, subagentSettings),
 				resolvedModel: progress.resolvedModel,

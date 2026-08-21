@@ -2662,6 +2662,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2694,6 +2703,16 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+
+[[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -2756,9 +2775,9 @@ checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
 
 [[package]]
 name = "html-to-markdown-rs"
-version = "3.11.0"
+version = "3.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f3e479289c322f5982b930575658df32d1161d6fab80b4078ce3e692f491df5"
+checksum = "718ba0514ab76ad0caccf199863df9fb94ed0b7196ae39505900826d4f7441ab"
 dependencies = [
  "ahash",
  "astral-tl",
@@ -4880,7 +4899,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -4950,7 +4969,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "ansi-width",
  "anyhow",
@@ -5026,16 +5045,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "unicode-width 0.2.2",
  "uucore",
  "uutils_term_grid",
  "windows-sys 0.61.2",
+ "xutf",
  "yansi",
 ]
 
 [[package]]
 name = "pi-iso"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "async-trait",
  "libc",
@@ -5047,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5059,6 +5078,7 @@ dependencies = [
  "clipboard-win",
  "core-graphics",
  "enigo",
+ "fancy-regex 0.16.2",
  "flume",
  "fontdue",
  "foreign-types",
@@ -5068,6 +5088,7 @@ dependencies = [
  "grep-pcre2",
  "grep-regex",
  "grep-searcher",
+ "heapless",
  "html-to-markdown-rs",
  "icy_sixel",
  "ignore",
@@ -5106,20 +5127,20 @@ dependencies = [
  "tokio-util",
  "toml",
  "uiautomation",
- "unicode-segmentation",
- "unicode-width 0.2.2",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
  "x11rb",
  "xcap",
  "xkeysym",
+ "xutf",
  "xxhash-rust",
+ "zstd",
  "zune-jpeg",
 ]
 
 [[package]]
 name = "pi-shell"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "anyhow",
  "brush-core",
@@ -5147,7 +5168,7 @@ dependencies = [
 
 [[package]]
 name = "pi-voice"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "audiopus_sys",
  "bytes",
@@ -5162,7 +5183,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "17.3.8"
+version = "17.4.0"
 dependencies = [
  "dashmap",
  "globset",
@@ -8830,6 +8851,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
+name = "xutf"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a14f3ca7038796715a5f5fd1c22aac21423b4f86fd9ef5585ef1744a5cfc573e"
+
+[[package]]
 name = "xxhash-rust"
 version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9070,9 +9097,9 @@ dependencies = [
 
 [[package]]
 name = "zerovec"
-version = "0.11.7"
+version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94b5c6b5976d66c1d703c4fd17d3f5e43c8cedaacf604961b171adc7130896d8"
+checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
 dependencies = [
  "serde",
  "yoke",
@@ -9096,6 +9123,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.16+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zune-core"

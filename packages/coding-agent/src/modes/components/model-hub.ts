@@ -333,9 +333,9 @@ export class ModelHubComponent implements Component {
 	#sidebarFollowActive = true;
 	#sidebarHover: number | null = null;
 	/**
-	 * Arrow-key ownership: `scope` (default) hops the sidebar even while the
-	 * search bar holds the caret; `list` navigates rows (browser models or
-	 * role rows). Tab toggles.
+	 * Arrow-key ownership: `scope` (default) hops the sidebar; `list`
+	 * navigates rows (browser models or role rows). Typing anywhere focuses
+	 * the model list; Tab toggles; ←/→ switches between sidebar and list.
 	 */
 	#focus: "scope" | "list" = "scope";
 
@@ -1985,8 +1985,7 @@ export class ModelHubComponent implements Component {
 			return;
 		}
 
-		// Arrow ownership: scope mode hops the sidebar even while the search
-		// bar holds the caret; list mode navigates rows.
+		// Arrow ownership: scope mode hops the sidebar; list mode navigates rows.
 		if (this.#focus === "scope") {
 			if (matchesSelectUp(data)) {
 				this.#moveSidebar(-1);
@@ -1999,16 +1998,36 @@ export class ModelHubComponent implements Component {
 		}
 
 		if (rolesView) {
+			const printable = extractPrintableText(data);
+			if (this.#focus === "scope" && printable !== undefined && printable.trim().length > 0) {
+				this.#setActiveEntry("all");
+				this.#focus = "list";
+				this.#browser.handleInput(data);
+				return;
+			}
 			this.#handleRolesViewInput(data);
 			return;
 		}
 		if (lockedView) {
+			const printable = extractPrintableText(data);
+			if (printable !== undefined && printable.trim().length > 0) {
+				this.#setActiveEntry("all");
+				this.#focus = "list";
+				this.#browser.handleInput(data);
+				return;
+			}
 			if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
 				this.#requestLogin(entry);
 			}
 			return;
 		}
+
+		const beforeQuery = this.#browser.query;
+		const isPrintable = extractPrintableText(data) !== undefined;
 		this.#browser.handleInput(data);
+		if (isPrintable || this.#browser.query !== beforeQuery) {
+			this.#focus = "list";
+		}
 	}
 
 	#isBrowserView(entry: SidebarEntry): boolean {

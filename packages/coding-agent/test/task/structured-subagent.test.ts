@@ -619,7 +619,7 @@ describe("structured subagent primitive", () => {
 					isolation: { requested: true },
 				}),
 			),
-		).rejects.toThrow("Isolated subagent execution requires a git repository");
+		).rejects.toThrow("Isolated subagent execution could not be prepared: not a repository");
 		expect(prepare).toHaveBeenCalledWith("/tmp/canonical-repo");
 		expect(artifactsDirsFromRegistry()).toEqual([]);
 	});

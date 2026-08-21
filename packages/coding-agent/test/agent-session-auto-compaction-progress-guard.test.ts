@@ -50,6 +50,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 	let sessionManager: SessionManager;
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
+	let compactHookEnabled = true;
 
 	const NOTICE_SOURCE = "compaction";
 	const NO_PROGRESS_FRAGMENT = "Compaction freed too little context to make progress";
@@ -61,6 +62,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 	});
 
 	beforeEach(() => {
+		compactHookEnabled = true;
 		sessionManager = SessionManager.inMemory();
 
 		// The progress-guard tests exercise AgentSession's post-compaction state
@@ -68,7 +70,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		// while returning the same short-circuit result without compiling a
 		// temporary extension for every test.
 		const extensionRunner = {
-			hasHandlers: (type: string) => type === "session_before_compact",
+			hasHandlers: (type: string) => compactHookEnabled && type === "session_before_compact",
 			emit: async (event: { type: string; preparation?: CompactionPreparation }) => {
 				if (event.type !== "session_before_compact" || !event.preparation) return undefined;
 				return {
@@ -858,12 +860,34 @@ describe("AgentSession auto-compaction progress guard", () => {
 		);
 	});
 
-	it("does not restore a length stop after handoff recovery commits", async () => {
-		session.settings.set("compaction.strategy", "handoff");
+	it("drops a length stop and retries after handoff recovery commits", async () => {
+		session.settings.set("compaction.methodOrder", ["handoff", "soft"]);
+		session.settings.set("compaction.enabled", true);
+		session.settings.set("compaction.keepRecentTokens", 1);
+		compactHookEnabled = false;
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "completed seed" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		});
 		session.settings.set("contextPromotion.enabled", false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-		const handoffSpy = vi.spyOn(session, "handoff").mockResolvedValue({ document: "handoff document" });
+		const generateHandoffSpy = vi
+			.spyOn(compactionModule, "generateHandoffFromContext")
+			.mockResolvedValue("handoff document");
 
 		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
 		session.subscribe(event => {
@@ -887,15 +911,20 @@ describe("AgentSession auto-compaction progress guard", () => {
 			},
 			timestamp: Date.now(),
 		};
+		sessionManager.appendMessage(assistantMsg);
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 
 		await compactionDone;
 		await session.waitForIdle();
 
-		expect(promptSpy).toHaveBeenCalledTimes(1);
-		expect(handoffSpy).toHaveBeenCalledTimes(1);
-		expect(continueSpy).not.toHaveBeenCalled();
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect(generateHandoffSpy).toHaveBeenCalledTimes(1);
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+		expect(sessionManager.getBranch().at(-1)).toMatchObject({
+			type: "compaction",
+			summary: "handoff document",
+		});
 		expect(sessionManager.getBranch()).not.toContainEqual(
 			expect.objectContaining({
 				type: "message",
@@ -1163,7 +1192,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		// Pin the threshold so the recovery band is exact: floor(76384 * 0.8) = 61107.
 		session.settings.set("compaction.thresholdTokens", 76384);
 		session.settings.set("compaction.thresholdPercent", -1);
-		session.settings.set("compaction.strategy", "context-full");
+		session.settings.set("compaction.methodOrder", ["soft"]);
 		session.settings.set("compaction.dropUseless", true);
 		session.settings.set("compaction.supersedeReads", true);
 		session.settings.set("compaction.keepRecentTokens", 10000);

@@ -21,6 +21,7 @@ import {
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
+import type { CompactionMethod } from "./compaction-methods";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
@@ -2243,9 +2244,13 @@ export class SessionManager {
 		shortSummary: string | undefined,
 		firstKeptEntryId: string,
 		tokensBefore: number,
-		details?: T,
-		fromExtension?: boolean,
-		preserveData?: Record<string, unknown>,
+		options: {
+			details?: T;
+			fromExtension?: boolean;
+			preserveData?: Record<string, unknown>;
+			method?: CompactionMethod;
+			tokensAfter?: number;
+		} = {},
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -2254,9 +2259,11 @@ export class SessionManager {
 			shortSummary,
 			firstKeptEntryId,
 			tokensBefore,
-			details,
-			fromExtension,
-			preserveData,
+			tokensAfter: options.tokensAfter,
+			method: options.method,
+			details: options.details,
+			fromExtension: options.fromExtension,
+			preserveData: options.preserveData,
 		};
 		this.#recordEntry(entry);
 		return entry.id;
