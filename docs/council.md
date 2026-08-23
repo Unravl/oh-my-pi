@@ -19,6 +19,29 @@ Those four subcommand words are the entire reserved set. A single-typo first tok
 
 `/council` is never forwarded as an ordinary user prompt: every branch consumes the slash command, so your task text does not become a turn on the main model. It does still reach Main in the default adjudication mode, where the adjudication assignment embeds the task alongside the planner draft and the reviewer reports. With a `modelRoles.adjudicator` assigned, the task goes only to the Council children.
 
+## The agent-facing tool
+
+Everything below describes a run the operator started. The agent can also convene the council itself, through the `convene` tool, without anyone typing `/council`. It has two actions and is documented in full in [Tools › convene](./tools/convene.md).
+
+| Action    | What runs                                                    | What comes back                                                            |
+| --------- | ------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `consult` | Every active reviewer answers one question, in parallel      | One prose answer per reviewer, plus each `history://<agent-id>`             |
+| `plan`    | The ordinary run: planner, reviewers, adjudicator            | The adjudicated plan, plus `local://council-<slug>-brief.md`               |
+
+`consult` is the council's roster without its planning apparatus: no planner, no adjudicator, no manifest, no publication, no rounds. It is consequently **not resumable**, absent from `/council status`, and outside the one-run-per-session slot — it neither blocks nor is blocked by a `/council` run. Reviewer transcripts are still durable.
+
+Because a consult runs no rounds, a member's `round` pin has nothing to schedule and does not gate it: **every enabled member with an assigned model answers**, including one pinned above `council.rounds` that a real run would park as inert. (A member with `round` omitted serves every configured round anyway, so it is always in round 1 either way.)
+
+`plan` is this document's run, driven by the coordinator, with the same durability, resume, cancellation, pane, cards, and stats. It is available only in the main session; a subagent gets `consult`. Three things differ, all following from the durable `origin` field the manifest now records:
+
+- **The adjudicator is always delegated.** Main-mode adjudication waits for your session to go idle, and the tool call holding your turn is exactly what would have to finish first, so it would deadlock. With `modelRoles.adjudicator` unassigned, adjudication falls back to the planner's already-resolved model and preflight warns — the same substitution shape as the planner's own `@slow` fallback, and never a model the run has not already resolved and credential-checked.
+- **No advisor attaches to any child.** Not the planner, not a reviewer, not the adjudicator, whatever `council.advisor.*` says. The `advisor` role is a *single shared model*, so watching several council children with it correlates outputs whose whole value is independence — it would manufacture the agreement the agent then reports to you as consensus. Your toggles keep applying in full to `/council`.
+- **The plan publishes as a brief.** The output path is `council-<slug>-brief.md`, not `council-<slug>-plan.md`. The plan listing matches `*plan.md`, so a brief is invisible to it, and the Council controller skips the plan-approval overlay: **you are never shown an approval screen for a plan you did not ask for.** The agent reads the brief and acts, or tells you what it said.
+
+`/council resume` reads the origin back off the manifest, so resuming an agent-convened run keeps its delegated adjudicator rather than being refused for an adjudicator change you never made.
+
+Set `council.tool: false` to remove the tool. The slash command is unaffected.
+
 ## The roster
 
 The roster lives in global `council.members` and is an ordered list of `{ role, enabled, round? }` entries. It defaults to `council1` through `council4`, all enabled. Roster ids are ordinary custom model roles, so each one must be assigned exactly one selector in `modelRoles`; on a fresh install nothing is assigned, and the first `/council <task>` refuses until you assign the enabled members in **Roles & Council**.
@@ -246,15 +269,15 @@ The resumed run re-promises the same output path; it is never re-slugged.
 
 ## Publication and plan review
 
-A successful run publishes exactly one file: `local://council-<slug>-plan.md`, in the session-local plan root. **A council run creates nothing in your working tree.**
+A successful run publishes exactly one file into the session-local plan root: `local://council-<slug>-plan.md` for a `/council` run, or `local://council-<slug>-brief.md` for an agent-convened one. **A council run creates nothing in your working tree.**
 
-The slug is derived deterministically from your task text, with no model involved: the task is Unicode-normalized, stripped of combining marks, lowercased, split on non-alphanumerics, and rejoined with hyphens one whole word at a time, stopping before the first word that would exceed a 48-character budget. Truncation is therefore word-aligned (the sole exception being a single first word longer than the whole budget, which is hard-cut). A trailing `-plan` is stripped, and an empty or bare-`plan` result becomes `council`. On collision the budget shrinks to make room for a `-2`, `-3`, … suffix, so the shortened name stays word-aligned.
+The slug is derived deterministically from your task text, with no model involved: the task is Unicode-normalized, stripped of combining marks, lowercased, split on non-alphanumerics, and rejoined with hyphens one whole word at a time, stopping before the first word that would exceed a 48-character budget. Truncation is therefore word-aligned (the sole exception being a single first word longer than the whole budget, which is hard-cut). A trailing `-plan` or `-brief` is stripped, and an empty or bare-stem result becomes `council`. On collision the budget shrinks to make room for a `-2`, `-3`, … suffix, so the shortened name stays word-aligned.
 
-The `council-` prefix is load-bearing, not cosmetic: your own plan-mode plans are `local://<slug>-plan.md` in the same root, and the plan listing has no provenance check, so an un-namespaced council plan could be mistaken for "the" plan or collide with a same-slug user plan. A publication collision is a terminal, non-resumable council failure.
+The `council-` prefix is load-bearing, not cosmetic: your own plan-mode plans are `local://<slug>-plan.md` in the same root, and the plan listing has no provenance check, so an un-namespaced council plan could be mistaken for "the" plan or collide with a same-slug user plan. A publication collision is a terminal, non-resumable council failure. The stem is load-bearing for the same reason at one remove: the listing matches `*plan.md`, so `-brief.md` is the mechanism by which an agent-convened plan stays out of plan review. The manifest's `origin` and its stem must agree, and a manifest where they disagree is refused as corrupt.
 
 **Legacy manifests.** A manifest written before the retarget may still carry `plans/<slug>.md` as its `outputPath`. That path is read-compatible and resolves under the session-local plan root's `plans/` subdirectory, which is created on demand there. It never refers to a repository directory. New runs mint only the namespaced bare filename.
 
-Plan review picks the published plan up through the ordinary plan-file listing over the same `local://` root; there is no separate handoff object. When plan mode is unavailable, the controller says so and points at `/plan-review`.
+Plan review picks the published plan up through the ordinary plan-file listing over the same `local://` root; there is no separate handoff object. When plan mode is unavailable, the controller says so and points at `/plan-review`. A brief never enters that listing and never reaches plan review.
 
 ## TUI surfaces
 

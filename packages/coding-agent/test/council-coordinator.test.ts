@@ -10,6 +10,7 @@ import {
 	type CouncilCoordinatorHost,
 	type CouncilCoordinatorSnapshot,
 	type CouncilKickoffPreview,
+	formatCouncilKickoff,
 	getCouncilCoordinator,
 	peekCouncilCoordinatorForSession,
 	quiesceAndReleaseCouncilForSessionTransition,
@@ -251,6 +252,7 @@ function makeHarness(rounds: 1 | 2 = 1, roles = ["correctness", "architecture"])
 		cwd: repoRoot,
 		repoRoot,
 		sessionId: "session-one",
+		origin: "command" as const,
 		publicationTarget: {
 			planRoot,
 			slug: "implement-council-coordination",
@@ -1826,11 +1828,13 @@ describe("CouncilCoordinator", () => {
 		expect(coordinator.snapshot?.failure?.code).toBe("EEXIST");
 		expect(coordinator.snapshot?.outputPath).toBe(promisedPath);
 		expect(run).toHaveBeenCalledTimes(childCalls);
-		// Resume revalidates the same immutable path, and hands preflight the run signal so a cancel
-		// during setup reaches whatever preflight is waiting on.
+		// Resume revalidates the same immutable path, hands preflight the run signal so a cancel during
+		// setup reaches whatever preflight is waiting on, and replays the persisted origin so the
+		// adjudication policy cannot drift between the original run and its continuation.
 		expect(preflightSpy.mock.calls[1]?.[2]).toEqual({
 			promisedOutputPath: promisedPath,
 			signal: expect.any(AbortSignal),
+			origin: "command",
 		});
 	});
 
@@ -3075,5 +3079,54 @@ describe("CouncilCoordinator", () => {
 
 		expect(coordinator.snapshot?.state).toBe("completed");
 		expect(peekCouncilCoordinatorForSession(harness.host.session, "session-one")).toBeUndefined();
+	});
+});
+
+describe("formatCouncilKickoff", () => {
+	const preview: CouncilKickoffPreview = {
+		runId: "run-one",
+		resumed: false,
+		plannerModel: "planner/slow",
+		plannerAdvisorModel: "advisor/watch",
+		adjudicator: { mode: "delegated", model: "judge/one", advisorModel: "advisor/watch" },
+		members: [
+			{ role: "council1", model: "review/one", rounds: [1, 2], advisorModel: "advisor/watch" },
+			{ role: "council2", model: "review/two", rounds: [2] },
+		],
+		rounds: 2,
+	};
+
+	it("names every model a run will bill, advisors included, per round", () => {
+		// This is the pre-spend line: it is the last thing a reader sees before money is spent, and it
+		// is shared by `/council` and the `convene` tool precisely so neither can understate the cost.
+		// An advisor is a *second* model charged to the role it watches, so dropping `++` would report a
+		// three-model run as costing two.
+		expect(formatCouncilKickoff(preview)).toBe(
+			"Starting run-one: planner=planner/slow ++advisor/watch, adjudicator=judge/one (delegated) ++advisor/watch, " +
+				"round 1: [Reviewer 1=review/one ++advisor/watch], " +
+				"round 2: [Reviewer 1=review/one ++advisor/watch, Reviewer 2=review/two].",
+		);
+	});
+
+	it("omits the advisor marker when no advisor is attached and says Resuming on a resume", () => {
+		const bare = formatCouncilKickoff({
+			...preview,
+			resumed: true,
+			plannerAdvisorModel: undefined,
+			adjudicator: { mode: "main", model: "main/active" },
+			members: [{ role: "council1", model: "review/one", rounds: [1] }],
+			rounds: 1,
+		});
+
+		expect(bare).toBe(
+			"Resuming run-one: planner=planner/slow, adjudicator=main/active (main), round 1: [Reviewer 1=review/one].",
+		);
+		expect(bare).not.toContain("++");
+	});
+
+	it("strips control sequences a provider model string could smuggle into the line", () => {
+		expect(formatCouncilKickoff({ ...preview, plannerModel: "planner/\u001b[31mslow\u001b[0m" })).toContain(
+			"planner=planner/slow ++advisor/watch",
+		);
 	});
 });

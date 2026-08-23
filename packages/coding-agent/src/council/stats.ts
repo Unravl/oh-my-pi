@@ -1,4 +1,5 @@
 import { councilRoleLabel } from "../config/model-roles";
+import type { StructuredSubagentResult } from "../task/structured-subagent";
 import { COUNCIL_DISPOSITIONS, type CouncilAdjudication, type CouncilDisposition, type CouncilGrade } from "./schema";
 import type { CouncilManifest, CouncilRunState, CouncilUsage } from "./state";
 
@@ -65,6 +66,35 @@ export interface CouncilRunStats {
 	 * leaves the segment off rather than claiming the artifacts are fine.
 	 */
 	dispositionsUnavailable?: boolean;
+}
+/** A fresh zero ledger. Every council usage bucket starts here, in the run and in a consult. */
+export function zeroCouncilUsage(): CouncilUsage {
+	return { requests: 0, tokens: 0, cost: 0 };
+}
+
+/**
+ * A settled council child's charge, with its attached advisor folded in.
+ *
+ * The advisor runs its own model on its own ledger and never reaches the child's `requests`/`tokens`,
+ * so every council surface that reports spend has to fold it the same way — otherwise the `++`
+ * marker beside a role has no number behind it, and the aggregate stops reconciling with the
+ * per-role buckets. One definition, used by the durable run and by a consult.
+ */
+export function councilChildUsage(result: StructuredSubagentResult): CouncilUsage {
+	const child = result.result;
+	const advisor = child.advisorUsage;
+	const rawCost = child.usage?.cost;
+	const cost =
+		typeof rawCost === "number"
+			? rawCost
+			: typeof rawCost?.total === "number" && Number.isFinite(rawCost.total)
+				? rawCost.total
+				: 0;
+	return {
+		requests: child.requests + (advisor?.requests ?? 0),
+		tokens: child.tokens + (advisor?.tokens ?? 0),
+		cost: Math.max(0, Number.isFinite(cost) ? cost : 0) + (advisor?.cost ?? 0),
+	};
 }
 
 function emptyTally(): CouncilDispositionTally {

@@ -95,6 +95,44 @@ describe("hub jobs task model badges", () => {
 		await manager.getJob(id)?.promise;
 	});
 
+	it("marks an advised task job's model badge and leaves an unadvised one bare", async () => {
+		settings.override("task.showResolvedModelBadge", true);
+		const selector = "anthropic/claude-opus:high";
+		const manager = new AsyncJobManager({ onJobComplete: () => {} });
+		const finish = Promise.withResolvers<string>();
+		const started: Array<Promise<void>> = [];
+		for (const [id, advisor] of [
+			["Advised", true],
+			["Bare", false],
+		] as const) {
+			const reported = Promise.withResolvers<void>();
+			started.push(reported.promise);
+			manager.register(
+				"task",
+				id,
+				async ({ reportProgress }) => {
+					await reportProgress("running", { progress: [{ id, resolvedModel: selector, advisor }] });
+					reported.resolve();
+					return finish.promise;
+				},
+				{ id },
+			);
+		}
+		await Promise.all(started);
+
+		const session = { asyncJobManager: manager } as unknown as ToolSession;
+		const rows = renderJobText({ jobs: snapshotJobs(session, manager.getAllJobs()) }).split("\n");
+
+		// The marker rides the model cell, so only the advised row carries it.
+		expect(rows.find(row => row.includes("Advised"))).toContain(`${selector}++`);
+		const bare = rows.find(row => row.includes("Bare"));
+		expect(bare).toContain(selector);
+		expect(bare).not.toContain("++");
+
+		finish.resolve("done");
+		await Promise.all(manager.getAllJobs().map(job => manager.getJob(job.id)?.promise));
+	});
+
 	it("hides a task job's resolved model selector when the badge setting is disabled", () => {
 		settings.override("task.showResolvedModelBadge", false);
 		const selector = "anthropic/claude-sonnet-4-20250514:high";

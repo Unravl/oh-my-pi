@@ -12,7 +12,13 @@ import {
 	syncDirectory,
 } from "./durable-fs";
 import { sha256CouncilContent } from "./hash";
-import { type CouncilPublishedArtifact, isLegacyCouncilOutputPath, isValidCouncilOutputPath } from "./state";
+import {
+	COUNCIL_OUTPUT_STEMS,
+	type CouncilPublishedArtifact,
+	type CouncilRunOrigin,
+	isLegacyCouncilOutputPath,
+	isValidCouncilOutputPath,
+} from "./state";
 
 /**
  * Ceiling for a freshly minted slug. Deliberately far below the 80-character bound
@@ -80,9 +86,14 @@ export class CouncilPublicationError extends Error {
 	}
 }
 
+/** Every published stem the slug must never collide with, longest-first so stripping is greedy. */
+const RESERVED_SLUG_STEMS: readonly string[] = Object.values(COUNCIL_OUTPUT_STEMS).sort(
+	(left, right) => right.length - left.length,
+);
+
 /**
- * Lowercase kebab slug, prohibited from ending in the ambiguous `-plan`. Truncation is
- * word-aligned: a character slice of a sentence-length council task ends mid-word
+ * Lowercase kebab slug, prohibited from ending in an ambiguous published stem (`-plan`, `-brief`).
+ * Truncation is word-aligned: a character slice of a sentence-length council task ends mid-word
  * (`…-depending-on-th`), which reads like corruption in the published file name.
  *
  * `maxLength` is narrowed by {@link resolveCouncilPublicationTarget} to leave room for a collision
@@ -104,8 +115,17 @@ export function councilPublicationSlug(text: string, maxLength: number = COUNCIL
 	// A first word longer than the whole budget still has to yield a name; only then is a hard cut
 	// the lesser evil.
 	if (slug === "" && words.length > 0) slug = words[0]!.slice(0, maxLength);
-	while (slug.endsWith("-plan")) slug = slug.slice(0, -5).replace(/-+$/g, "");
-	if (slug === "" || slug === "plan") slug = "council";
+	// Loop until nothing strips: `…-plan-brief` has to lose both suffixes, and a task ending in
+	// `plan plan` has to lose the repeat.
+	for (let stripped = true; stripped; ) {
+		stripped = false;
+		for (const stem of RESERVED_SLUG_STEMS) {
+			if (!slug.endsWith(`-${stem}`)) continue;
+			slug = slug.slice(0, -(stem.length + 1)).replace(/-+$/g, "");
+			stripped = true;
+		}
+	}
+	if (slug === "" || RESERVED_SLUG_STEMS.includes(slug)) slug = "council";
 	return slug;
 }
 
@@ -180,23 +200,28 @@ async function ensurePublicationDirectory(
 /**
  * Resolve and promise a collision-free target once, before any child model is launched.
  * `name` is the model-generated plan title when one is available and the raw task otherwise; both
- * are slugified identically.
+ * are slugified identically. `origin` picks the stem, which is the only thing separating a
+ * plan-review candidate from an agent's brief.
  */
 export async function resolveCouncilPublicationTarget(
 	planRoot: string,
 	name: string,
+	origin: CouncilRunOrigin,
 	options: CouncilPublicationDurabilityOptions = {},
 ): Promise<CouncilPublicationTarget> {
 	const filesystem = options.filesystem ?? fs;
 	const canonicalPlanRoot = await ensureCouncilPlanRoot(planRoot, options);
+	const stem = COUNCIL_OUTPUT_STEMS[origin];
 	for (let suffix = 1; suffix < Number.MAX_SAFE_INTEGER; suffix++) {
 		const suffixText = suffix === 1 ? "" : `-${suffix}`;
 		const slug = `${councilPublicationSlug(name, COUNCIL_SLUG_MAX_LENGTH - suffixText.length)}${suffixText}`;
 		// Namespacing is load-bearing, not cosmetic: user plan-mode plans are `local://<slug>-plan.md`
 		// in this same root and `listPlanFiles` has no provenance check, so an un-namespaced council
 		// plan could both be mistaken for "the" plan and collide with a same-slug user plan — and a
-		// publication collision is a terminal, non-resumable council failure.
-		const fileName = `council-${slug}-plan.md`;
+		// publication collision is a terminal, non-resumable council failure. The `brief` stem goes
+		// further and leaves that listing entirely, because an agent-origin run was never offered for
+		// execution.
+		const fileName = `council-${slug}-${stem}.md`;
 		const absolutePath = path.join(canonicalPlanRoot, fileName);
 		try {
 			await filesystem.lstat(absolutePath);
@@ -212,6 +237,9 @@ export async function resolveCouncilPublicationTarget(
 	throw new CouncilPublicationError("IO", "Could not allocate a council publication target");
 }
 
+/** Strips the `council-` prefix and whichever published stem the promised name carries. */
+const PROMISED_STEM_PATTERN = new RegExp(`-(?:${Object.values(COUNCIL_OUTPUT_STEMS).join("|")})\\.md$`);
+
 /** Revalidate a manifest's already-promised target without allocating a collision suffix. */
 export async function resolvePromisedCouncilPublicationTarget(
 	planRoot: string,
@@ -225,7 +253,7 @@ export async function resolvePromisedCouncilPublicationTarget(
 		planRoot: canonicalPlanRoot,
 		slug: fileName
 			.replace(/^council-/, "")
-			.replace(/-plan\.md$/, "")
+			.replace(PROMISED_STEM_PATTERN, "")
 			.replace(/\.md$/, ""),
 		fileName,
 		relativePath: outputPath,

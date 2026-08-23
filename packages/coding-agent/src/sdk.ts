@@ -1810,6 +1810,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setPlanProposalHandler: handler => session.setPlanProposalHandler(handler),
 			peekCouncilHandler: () => session.peekCouncilHandler(),
 			setCouncilHandler: handler => session.setCouncilHandler(handler),
+			// Built lazily: `session` is assigned after this literal, and the council must never be
+			// reachable from a half-constructed session.
+			getCouncilHost: () =>
+				session && modelRegistry ? { session, toolSession, sessionManager, settings, modelRegistry } : undefined,
 			allocateOutputArtifact: async toolType => {
 				try {
 					return await sessionManager.allocateArtifactPath(toolType);

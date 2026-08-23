@@ -21,11 +21,18 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { directorySymlinkType, durableOps, symlinksSupported } from "./helpers/platform";
 
 describe("council publication targets", () => {
-	it("creates bounded lowercase kebab slugs that never end in -plan", () => {
+	it("creates bounded lowercase kebab slugs that never end in a published stem", () => {
 		expect(councilPublicationSlug("  Fix OAuth_2 / Redirect PLAN  ")).toBe("fix-oauth-2-redirect");
 		expect(councilPublicationSlug("plan")).toBe("council");
 		expect(councilPublicationSlug("...")).toBe("council");
 		expect(councilPublicationSlug(`${"Long task ".repeat(20)}plan`)).not.toEndWith("-plan");
+		// Both stems are reserved, and stripping repeats until nothing is left to strip: either name
+		// would otherwise produce `council-x-brief-brief.md`, which the output-path grammar rejects.
+		expect(councilPublicationSlug("brief")).toBe("council");
+		expect(councilPublicationSlug("Rework the auth brief")).toBe("rework-the-auth");
+		expect(councilPublicationSlug("Rework the auth plan brief")).toBe("rework-the-auth");
+		// Only whole trailing words are stems; a word that merely ends in one survives.
+		expect(councilPublicationSlug("Write the debrief")).toBe("write-the-debrief");
 	});
 
 	it("truncates a sentence-length task on a word boundary inside the length budget", () => {
@@ -79,7 +86,7 @@ describe("council publication targets", () => {
 	it("mints a bare council-<slug>-plan.md target directly in the canonical plan root", async () => {
 		using temp = TempDir.createSync("@omp-council-target-shape-");
 		const planRoot = temp.join("root");
-		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth", "command");
 
 		expect(target.relativePath).toBe("council-review-auth-plan.md");
 		expect(target.fileName).toBe(target.relativePath);
@@ -89,13 +96,37 @@ describe("council publication targets", () => {
 		expect(path.dirname(target.absolutePath)).toBe(target.planRoot);
 	});
 
+	it("mints an agent brief that the plan listing cannot see, in the same root and namespace", async () => {
+		using temp = TempDir.createSync("@omp-council-brief-target-");
+		const planRoot = temp.join("root");
+		const brief = await resolveCouncilPublicationTarget(planRoot, "Review auth", "agent");
+
+		expect(brief.relativePath).toBe("council-review-auth-brief.md");
+		expect(brief.slug).toBe("review-auth");
+		// The consumer contract: `listPlanFiles` selects on this exact pattern, so an agent-convened run
+		// is excluded from plan review by its name alone. If this ever matches, the operator gets an
+		// approval screen for a plan they never asked for.
+		expect(/plan\.md$/i.test(brief.fileName)).toBeFalse();
+		expect(
+			/plan\.md$/i.test((await resolveCouncilPublicationTarget(planRoot, "Review auth", "command")).fileName),
+		).toBeTrue();
+
+		// Both stems share one collision namespace, so a brief cannot silently overwrite a plan.
+		fs.writeFileSync(brief.absolutePath, "existing");
+		expect((await resolveCouncilPublicationTarget(planRoot, "Review auth", "agent")).relativePath).toBe(
+			"council-review-auth-2-brief.md",
+		);
+		// A promised brief round-trips its slug through the same stem-stripping the plan form uses.
+		expect((await resolvePromisedCouncilPublicationTarget(planRoot, brief.relativePath)).slug).toBe("review-auth");
+	});
+
 	it("resolves a collision suffix once", async () => {
 		using temp = TempDir.createSync("@omp-council-target-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
 		fs.writeFileSync(path.join(planRoot, "council-review-auth-plan.md"), "existing");
 
-		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth plan");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth plan", "command");
 		expect(target.relativePath).toBe("council-review-auth-2-plan.md");
 		expect(target.slug).toBe("review-auth-2");
 		expect(target.absolutePath).toBe(path.join(target.planRoot, "council-review-auth-2-plan.md"));
@@ -127,7 +158,7 @@ describe("council publication targets", () => {
 		fs.writeFileSync(fileRoot, "not a directory");
 
 		try {
-			await resolveCouncilPublicationTarget(fileRoot, "Review auth");
+			await resolveCouncilPublicationTarget(fileRoot, "Review auth", "command");
 			expect.unreachable();
 		} catch (error) {
 			expect(error).toBeInstanceOf(CouncilPublicationError);
@@ -203,7 +234,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-publish-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Review auth", "command");
 		const first = await publishCouncilPlan({
 			planRoot,
 			outputPath: target.relativePath,
@@ -222,7 +253,7 @@ describe("atomic council publication", () => {
 		fs.mkdirSync(parent);
 		const planRoot = path.join(parent, "root");
 		const content = "# Contained plan\n";
-		const target = await resolveCouncilPublicationTarget(planRoot, "Contained plan");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Contained plan", "command");
 		const parentBefore = fs.readdirSync(parent).sort();
 
 		const published = await publishCouncilPlan({ planRoot, outputPath: target.relativePath, content });
@@ -242,7 +273,7 @@ describe("atomic council publication", () => {
 		const planRoot = temp.join("link", "root");
 		const content = "# Plan behind a symlinked ancestor\n";
 
-		const target = await resolveCouncilPublicationTarget(planRoot, "Symlinked ancestor");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Symlinked ancestor", "command");
 		expect(target.planRoot).toBe(fs.realpathSync(realRoot));
 
 		const published = await publishCouncilPlan({ planRoot, outputPath: target.relativePath, content });
@@ -274,7 +305,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-crlf-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Crlf target");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Crlf target", "command");
 		const published = await publishCouncilPlan({
 			planRoot,
 			outputPath: target.relativePath,
@@ -294,7 +325,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-no-hardlink-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "No hardlink");
+		const target = await resolveCouncilPublicationTarget(planRoot, "No hardlink", "command");
 		// What FAT/exFAT volumes, most SMB shares, and non-NTFS Windows targets return for CreateHardLinkW.
 		const filesystem: CouncilPublicationFileSystem = {
 			open: fsPromises.open,
@@ -332,7 +363,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-adopt-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Resume target");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Resume target", "command");
 		const first = await publishCouncilPlan({
 			planRoot,
 			outputPath: target.relativePath,
@@ -355,7 +386,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-adopt-mismatch-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Mismatch target");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Mismatch target", "command");
 		fs.writeFileSync(target.absolutePath, "competitor");
 		await expect(
 			publishCouncilPlan({
@@ -372,7 +403,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-fresh-equal-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Fresh target");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Fresh target", "command");
 		fs.writeFileSync(target.absolutePath, "same bytes");
 		await expect(
 			publishCouncilPlan({ planRoot, outputPath: target.relativePath, content: "same bytes" }),
@@ -384,7 +415,7 @@ describe("atomic council publication", () => {
 		using temp = TempDir.createSync("@omp-council-eexist-");
 		const planRoot = temp.join("root");
 		fs.mkdirSync(planRoot);
-		const target = await resolveCouncilPublicationTarget(planRoot, "Race target");
+		const target = await resolveCouncilPublicationTarget(planRoot, "Race target", "command");
 		const operations: CouncilPublicationDurabilityOperation[] = [];
 		const durability = {
 			onDurabilityOperation: (operation: CouncilPublicationDurabilityOperation) => operations.push(operation),

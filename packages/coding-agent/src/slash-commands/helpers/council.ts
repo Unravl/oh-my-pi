@@ -11,13 +11,8 @@ import {
 	parseCouncilConfig,
 	resolveCouncilMemberSelector,
 } from "../../council/config";
-import type {
-	CouncilCoordinator,
-	CouncilCoordinatorHost,
-	CouncilKickoffPreview,
-	CouncilRunOptions,
-} from "../../council/coordinator";
-import { getCouncilCoordinator } from "../../council/coordinator";
+import type { CouncilCoordinator, CouncilCoordinatorHost, CouncilRunOptions } from "../../council/coordinator";
+import { formatCouncilKickoff, getCouncilCoordinator } from "../../council/coordinator";
 import { type CouncilManifest, councilStateLabel, isCouncilTerminalState } from "../../council/state";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
@@ -184,22 +179,6 @@ function coordinatorHost(runtime: SlashCommandRuntime): CouncilCoordinatorHost {
 function sanitizedErrorText(error: unknown): string {
 	return sanitizeText(error instanceof Error ? error.message : String(error));
 }
-
-/** One pre-spend line naming the run, its per-round roster, and every model it is about to pay for. */
-function formatCouncilKickoff(preview: CouncilKickoffPreview): string {
-	const advisorSuffix = (model: string | undefined): string => (model ? ` ++${model}` : "");
-	const rounds: string[] = [];
-	for (let round = 1; round <= preview.rounds; round++) {
-		const serving = preview.members
-			.filter(member => member.rounds.includes(round))
-			.map(member => `${councilRoleLabel(member.role)}=${member.model}${advisorSuffix(member.advisorModel)}`);
-		rounds.push(`round ${round}: [${serving.join(", ")}]`);
-	}
-	return sanitizeText(
-		`${preview.resumed ? "Resuming" : "Starting"} ${preview.runId}: planner=${preview.plannerModel}${advisorSuffix(preview.plannerAdvisorModel)}, adjudicator=${preview.adjudicator.model} (${preview.adjudicator.mode})${advisorSuffix(preview.adjudicator.advisorModel)}, ${rounds.join(", ")}.`,
-	);
-}
-
 /**
  * Resolving the roster can block on the keychain or an OAuth refresh, and `resume` additionally
  * reads storage first, so both paths announce what they are doing before the coordinator call and

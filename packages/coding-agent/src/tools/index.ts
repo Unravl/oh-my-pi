@@ -6,6 +6,7 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
+import type { CouncilCoordinatorHost } from "../council/coordinator";
 import { EditTool } from "../edit";
 import { checkJuliaKernelAvailability } from "../eval/jl/kernel";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
@@ -45,6 +46,7 @@ import { BrowserTool } from "./browser";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { ComputerTool } from "./computer";
+import { ConveneTool } from "./convene";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -368,6 +370,10 @@ export interface ToolSession {
 	peekCouncilHandler?(): CouncilAdjudicationHandler | undefined;
 	/** Register or clear the active council run's adjudication handler. */
 	setCouncilHandler?(handler: CouncilAdjudicationHandler | null): void;
+	/** Live surfaces the `convene` tool needs and a ToolSession cannot supply on its own: the owning
+	 *  `AgentSession` and its full `SessionManager`. Absent before the session finishes constructing,
+	 *  and in any host that never builds one. */
+	getCouncilHost?(): CouncilCoordinatorHost | undefined;
 	/** Get active checkpoint state if any. */
 	getCheckpointState?: () => CheckpointState | undefined;
 	/** Set or clear active checkpoint state. */
@@ -450,6 +456,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	browser: s => new BrowserTool(s),
 	computer: s => new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
+	convene: ConveneTool.createIf,
 	rewind: RewindTool.createIf,
 	task: s => TaskTool.create(s),
 	hub: s => new HubTool(s),
@@ -640,6 +647,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("checkpoint.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
+		// Advertised to subagents too: a child may `consult` the reviewers even though `plan` refuses
+		// below the main session. A restricted council child never reaches here — its own five-tool
+		// slate omits `council`, which is what stops a reviewer convening the council that spawned it.
+		if (name === "convene") return session.settings.get("council.tool") && !restrictToolNames;
 		if (name === "hub") {
 			return (
 				!restrictToolNames && session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)

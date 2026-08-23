@@ -2308,6 +2308,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		modelRole,
 		resolvedModel: progress.resolvedModel,
 		resolvedModelIsFallback: progress.resolvedModelIsFallback,
+		advisor: progress.advisor,
 		authFallbackUsed: progress.authFallbackUsed,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
 		aborted: wasAborted,
@@ -2400,6 +2401,10 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		}
 
 		turnMonitor.setActiveSession(session);
+		// Advisor liveness is only knowable from the built session (`advisor.enabled`
+		// plus a resolvable advisor-role model), and a parked agent's wake turns run
+		// under the same session, so the marker carries across them.
+		if (session.isAdvisorActive?.() === true) turnMonitor.progress.advisor = true;
 		const unsubscribeTurn = turnMonitor.attach(session);
 		return async turnError => {
 			unsubscribeTurn();
@@ -3216,6 +3221,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			const session = createdSession.session;
+			// Only the built session can answer this: the spawn's `advisor.enabled` override is
+			// necessary but not sufficient — the advisor-role model has to resolve too. Stamped on
+			// progress so the task widget marks advised children. Optional-called for the same
+			// reason `getAdvisorStats?.()` below is: a partial session stand-in reports nothing
+			// rather than failing the whole spawn.
+			const advisorActive = session.isAdvisorActive?.() === true;
+			if (advisorActive) progress.advisor = true;
 			const deferredResolution = createdSession.deferredModelResolution;
 			if (deferredResolution) {
 				progress.resolvedModel = deferredResolution.resolvedSelector;
@@ -3224,8 +3236,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				if (deferredContextWindow !== null && deferredContextWindow > 0) {
 					progress.contextWindow = deferredContextWindow;
 				}
-				monitor.scheduleProgress(true);
 			}
+			if (deferredResolution || advisorActive) monitor.scheduleProgress(true);
 			sessionCreatedAt = performance.now();
 
 			monitor.setActiveSession(session);

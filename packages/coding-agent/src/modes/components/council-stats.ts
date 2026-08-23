@@ -1,14 +1,10 @@
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import {
-	COUNCIL_ADVISOR_MARKER,
-	type CouncilRunState,
-	type CouncilUsage,
-	councilStateBadgeLabel,
-} from "../../council/state";
+import { type CouncilRunState, type CouncilUsage, councilStateBadgeLabel } from "../../council/state";
 import type { CouncilDispositionTally, CouncilRoleStats, CouncilRunStats } from "../../council/stats";
 import { formatElapsedClock } from "../../slash-commands/helpers/format";
 import {
+	ADVISOR_MARKER,
 	formatBadge,
 	formatStatusIcon,
 	previewLine,
@@ -157,7 +153,7 @@ function roleCells(role: CouncilRoleStats, width: number, showAttempts: boolean)
 	const label =
 		sanitizedCell(role.label, Math.min(TRUNCATE_LENGTHS.TITLE, Math.max(4, Math.floor(width / 5)))) || role.kind;
 	// The advisor marker is budgeted before truncating so it cannot be the byte that gets clipped.
-	const marker = role.advisor === true ? COUNCIL_ADVISOR_MARKER : "";
+	const marker = role.advisor === true ? ADVISOR_MARKER : "";
 	const model =
 		sanitizedCell(
 			role.model,

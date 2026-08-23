@@ -104,6 +104,7 @@ function emitProgressStatus(emitStatus: ((event: JsStatusEvent) => void) | undef
 		cost: progress.cost,
 		durationMs: progress.durationMs,
 		model: progress.resolvedModel,
+		advisor: progress.advisor,
 	});
 }
 

@@ -72,6 +72,14 @@ export const PREVIEW_LIMITS = {
 /** Default number of terminal output rows shown before expansion. */
 export const DEFAULT_TERMINAL_PREVIEW_LINES = 10;
 
+/**
+ * Marker appended to the model cell of an agent whose turns a live advisor
+ * watches. Shared by every surface that prints a model next to an agent — the
+ * status line's own model segment, the Council pane/stats roster, and the task
+ * widget's subagent rows — so one glyph means "advised" everywhere.
+ */
+export const ADVISOR_MARKER = "++";
+
 /** Truncation lengths for different content types */
 export const TRUNCATE_LENGTHS = {
 	/** Short titles, labels */
@@ -181,6 +189,19 @@ export function getDomain(url: string): string {
 // =============================================================================
 
 export { formatAge, formatBytes, formatCount, formatDuration, pluralize } from "@oh-my-pi/pi-utils";
+
+/** Whole-second elapsed for a live timeout footer. Frozen `nowMs` wins so committed rows cannot drift. */
+export function resolveLiveElapsedSeconds(args: {
+	isPartial: boolean;
+	startedAtMs?: number;
+	nowMs?: number;
+	hasFinalWall?: boolean;
+}): number | undefined {
+	if (!args.isPartial || args.hasFinalWall) return undefined;
+	if (typeof args.startedAtMs !== "number" || !Number.isFinite(args.startedAtMs)) return undefined;
+	const now = typeof args.nowMs === "number" && Number.isFinite(args.nowMs) ? args.nowMs : Date.now();
+	return Math.floor(Math.max(0, now - args.startedAtMs) / 1000);
+}
 
 // =============================================================================
 // Theme Helper Utilities

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { EvalToolDetails } from "@oh-my-pi/pi-coding-agent/eval/types";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -70,5 +70,28 @@ describe("eval renderer: viewport tail window for cell code", () => {
 		expect(rendered).toContain(lastLine);
 		expect(rendered).toContain("earlier line");
 		expect(rendered).not.toContain(firstLine);
+	});
+
+	it("renders live wall time next to the timeout while a cell is running", () => {
+		const startedAtMs = 1_700_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 12_000);
+		const details: EvalToolDetails = {
+			language: "python",
+			languages: ["python"],
+			cells: [{ index: 0, code: "time.sleep(30)", language: "python", output: "", status: "running" }],
+		};
+		const component = evalToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "" }], details },
+			{
+				expanded: false,
+				isPartial: true,
+				renderContext: { timeout: 30, startedAtMs },
+			},
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		expect(rendered).toContain("Wall: 12s");
+		expect(rendered).toContain("Timeout: 30s");
+		vi.restoreAllMocks();
 	});
 });

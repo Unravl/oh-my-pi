@@ -1039,6 +1039,27 @@ describe("CouncilController", () => {
 		harness.controller.dispose();
 	});
 
+	it("never opens the overlay for an agent-convened run, published or not", async () => {
+		// The whole point of an agent-convened run: it answers the tool that asked for it. Offering the
+		// operator an approval screen would abort their in-flight turn for a plan they never requested.
+		const harness = councilHarness();
+		harness.controller.attach();
+		await flushMicrotasks();
+
+		const agentRun = publishedManifest();
+		agentRun.origin = "agent";
+		agentRun.outputPath = "council-review-the-implementation-brief.md";
+		agentRun.published = { ...agentRun.published!, path: agentRun.outputPath };
+		harness.emit({ manifest: agentRun, members: [], mainTurnOwned: false });
+		await flushMicrotasks();
+
+		expect(harness.handlePlanApproval).not.toHaveBeenCalled();
+		expect(harness.ensureCouncilPlanMode).not.toHaveBeenCalled();
+		// No approval marker either: nothing was presented, so nothing is recorded as presented.
+		expect(harness.sendCustomMessage).not.toHaveBeenCalled();
+		harness.controller.dispose();
+	});
+
 	it("never opens the overlay when the very first snapshot is already terminal", async () => {
 		const harness = councilHarness({ firstSnapshot: terminalSnapshot() });
 		harness.controller.attach();

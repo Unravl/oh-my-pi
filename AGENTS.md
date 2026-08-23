@@ -171,6 +171,32 @@ Manual reader loops only when the protocol requires it (SSE, streaming JSON-RPC)
 - **String width**: `Bun.stringWidth(text, { countAnsiEscapeCodes?: false })`.
 - **Wrapping**: `Bun.wrapAnsi(text, width, { wordWrap, hard, trim })`.
 
+## Council
+
+Invariants that are easy to get wrong and expensive when you do. `packages/coding-agent/src/council/`, documented in `docs/council.md`.
+
+### Round membership
+
+`councilMemberRounds(member, configuredRounds)` in `council/config.ts` is the **single authority**. Never re-derive round membership inline.
+
+- **An omitted `round` means EVERY configured round.** Such a member is therefore *always* in round 1. It is not "unassigned" or "round-less" — it is in every round, and code that filters for round 1 MUST include it.
+- A `round` pinned at or below `council.rounds` serves exactly that round.
+- A `round` pinned **above** `council.rounds` yields the empty array. That empty set is the one canonical encoding of *inert*: parked configuration that never runs, is never credential-checked, never reaches the manifest roster, and never degrades a run.
+- `enabled: false` is a separate axis. A member can be disabled, inert, or both.
+
+**Rounds only exist in a dispatch.** A consult runs no rounds, so a `round` pin has nothing to schedule and MUST NOT exclude anybody: `resolveCouncilRoster` takes `scope: "rounds" | "all"`, and a consult uses `"all"` so every *enabled* member with a resolvable model answers. Round staffing (`COUNCIL_ROUND_UNSTAFFED`) is likewise dispatch-only.
+
+### Advisors
+
+The `advisor` model role is a **single shared model**, so attaching it to several council children correlates outputs whose only value is being independent.
+
+- An **agent-convened** run (`origin: "agent"` — the `convene` tool) attaches **no advisor to any child**: not the planner, not a reviewer, not the adjudicator. An agent asking the council is buying the assigned models' own judgment; a common advisor manufactures the agreement it would then report as consensus.
+- The operator's `council.advisor.*` toggles keep applying in full to `/council`. Do not "helpfully" extend the suppression to it.
+
+### Origin
+
+`CouncilManifestV2.origin` is durable and decides two coupled things: the published stem (`-plan.md` for `command`, `-brief.md` for `agent`) and whether Main may adjudicate. They MUST agree — `parseCouncilManifest` refuses a mismatch as corrupt, because the stem is the entire mechanism keeping an agent's brief out of `listPlanFiles` and the plan-approval overlay. An agent-convened run can never adjudicate in Main (the tool call holding the turn is what Main would have to finish first), so its adjudicator is always delegated.
+
 ## Generated Files
 
 **NEVER edit `packages/catalog/src/models.json` directly.** It is generated from upstream sources (stencil.so, provider catalog discovery, OpenCode docs) by `packages/catalog/scripts/generate-models.ts` and the descriptors/resolvers in `packages/catalog/src/provider-models/`. Hand-edits get overwritten on the next regen.

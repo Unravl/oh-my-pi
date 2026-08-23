@@ -72,13 +72,6 @@ export function councilStateBadgeLabel(state: CouncilRunState): string {
 	);
 }
 
-/**
- * Marker appended to the model cell of an agent whose turns a live advisor watches. Any council
- * role may carry it: planner, reviewer, and delegated adjudicator each opt in through
- * `council.advisor.*`, and a Main-mode adjudicator follows the global `advisor.enabled`.
- */
-export const COUNCIL_ADVISOR_MARKER = "++";
-
 export interface CouncilArtifactReference {
 	url: string;
 	sha256: string;
@@ -240,6 +233,12 @@ export interface CouncilManifestV2 {
 	state: CouncilRunState;
 	task: string;
 	repoRoot: string;
+	/**
+	 * Who convened this run. Optional so a manifest written before origins existed still parses; read
+	 * it through {@link DEFAULT_COUNCIL_RUN_ORIGIN}, never bare. Durable because it decides both the
+	 * published stem and whether a resume may fall back to Main-mode adjudication.
+	 */
+	origin?: CouncilRunOrigin;
 	/** Collision-free repo-relative promise, resolved before model spend. */
 	outputPath: string;
 	published?: CouncilPublishedArtifact;
@@ -308,10 +307,38 @@ const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
  */
 export const COUNCIL_AGENT_ID_LIMIT = 16;
 /**
+ * Who convened a run.
+ *
+ * `command` is `/council <task>`: the operator asked, so the published plan is a plan-review
+ * candidate and an unassigned `adjudicator` role lets the live Main session judge.
+ *
+ * `agent` is the `convene` tool: the caller holds the turn for the whole run, so Main can never
+ * take an adjudication turn (it would deadlock against the tool call) and the result is returned to
+ * the caller rather than offered to the operator for execution. Both differences are derived from
+ * this one field.
+ */
+export type CouncilRunOrigin = "command" | "agent";
+
+/** Compatibility default for a manifest written before origins existed. */
+export const DEFAULT_COUNCIL_RUN_ORIGIN: CouncilRunOrigin = "command";
+
+const RUN_ORIGINS: Record<CouncilRunOrigin, true> = { command: true, agent: true };
+
+/**
+ * Published-file stem per origin. `plan` is deliberately the only stem `listPlanFiles` can see: an
+ * agent-origin run publishes a `brief`, so convening the council mid-turn never injects a candidate
+ * into the operator's plan-review listing.
+ */
+export const COUNCIL_OUTPUT_STEMS: Record<CouncilRunOrigin, string> = { command: "plan", agent: "brief" };
+
+/** Every stem the published-plan grammar accepts, for the slug guards that must reject all of them. */
+const COUNCIL_RESERVED_SLUG_STEMS: readonly string[] = Object.values(COUNCIL_OUTPUT_STEMS);
+
+/**
  * Council plans are published into the session `local://` root, namespaced so they can never be
  * mistaken for a user plan-mode plan (`local://<slug>-plan.md`) by `listPlanFiles`.
  */
-const COUNCIL_OUTPUT_PATH_PATTERN = /^council-([a-z0-9]+(?:-[a-z0-9]+)*)-plan\.md$/;
+const COUNCIL_OUTPUT_PATH_PATTERN = /^council-([a-z0-9]+(?:-[a-z0-9]+)*)-(plan|brief)\.md$/;
 /**
  * Pre-retarget grammar, still parsed so a developer's in-flight run stays readable and resumable.
  * A legacy manifest publishes to `<planRoot>/plans/<slug>.md` — inside the session cache, never the
@@ -737,14 +764,16 @@ function validateRoundRecord(
 
 /**
  * Accepts the namespaced session-cache form and the legacy `plans/<slug>.md` form. Both grammars
- * bound the slug at 80 characters and reject the ambiguous `plan`/`*-plan` stems that would make a
- * council plan indistinguishable from a user plan-mode plan.
+ * bound the slug at 80 characters and reject every reserved stem (`plan`, `brief`) bare or trailing:
+ * a slug that ends in the stem would make `council-x-plan-plan.md` and a stem-only name ambiguous
+ * against a user plan-mode plan and against the other origin's artifact.
  */
 export function isValidCouncilOutputPath(value: string): boolean {
 	const match = COUNCIL_OUTPUT_PATH_PATTERN.exec(value) ?? LEGACY_OUTPUT_PATH_PATTERN.exec(value);
 	if (!match) return false;
 	const slug = match[1]!;
-	return slug.length <= 80 && slug !== "plan" && !slug.endsWith("-plan");
+	if (slug.length > 80) return false;
+	return !COUNCIL_RESERVED_SLUG_STEMS.some(stem => slug === stem || slug.endsWith(`-${stem}`));
 }
 
 /** True only for the pre-retarget grammar, which publishes under a `plans/` subdirectory. */
@@ -757,7 +786,7 @@ function validateOutputPath(value: unknown): string {
 	if (!isValidCouncilOutputPath(outputPath)) {
 		invalid(
 			"outputPath",
-			"expected council-<lowercase-kebab-slug>-plan.md (or legacy plans/<slug>.md) with a 1..80 character slug not ending in -plan",
+			`expected council-<lowercase-kebab-slug>-(${COUNCIL_RESERVED_SLUG_STEMS.join("|")}).md (or legacy plans/<slug>.md) with a 1..80 character slug not ending in -${COUNCIL_RESERVED_SLUG_STEMS.join(" or -")}`,
 		);
 	}
 	return outputPath;
@@ -826,6 +855,7 @@ export function parseCouncilManifest(value: unknown): CouncilManifest {
 		"state",
 		"task",
 		"repoRoot",
+		"origin",
 		"outputPath",
 		"published",
 		"timestamps",
@@ -850,6 +880,23 @@ export function parseCouncilManifest(value: unknown): CouncilManifest {
 	for (const field of ["runId", "sessionId", "mainAgentId", "task"] as const) requireString(manifest[field], field);
 	requireString(manifest.repoRoot, "repoRoot");
 	const outputPath = validateOutputPath(manifest.outputPath);
+	if (Object.hasOwn(manifest, "origin")) {
+		if (typeof manifest.origin !== "string" || !Object.hasOwn(RUN_ORIGINS, manifest.origin)) {
+			invalid("origin", `expected one of ${Object.keys(RUN_ORIGINS).join(", ")}`);
+		}
+	}
+	// The stem is what keeps an agent-origin brief out of `listPlanFiles`, so a manifest whose origin
+	// and stem disagree is corrupt rather than merely odd: honouring it would either hide an
+	// operator's plan or offer an agent's brief for execution. Legacy `plans/<slug>.md` carries no
+	// stem and predates origins, so it is exempt.
+	const stem = COUNCIL_OUTPUT_PATH_PATTERN.exec(outputPath)?.[2];
+	const expectedStem = COUNCIL_OUTPUT_STEMS[(manifest.origin as CouncilRunOrigin) ?? DEFAULT_COUNCIL_RUN_ORIGIN];
+	if (stem !== undefined && stem !== expectedStem) {
+		invalid(
+			"outputPath",
+			`expected a -${expectedStem}.md stem for a ${manifest.origin ?? DEFAULT_COUNCIL_RUN_ORIGIN}-origin run`,
+		);
+	}
 	if (typeof manifest.state !== "string" || !Object.hasOwn(RUN_STATES, manifest.state))
 		invalid("state", "unknown run state");
 	const state = manifest.state as CouncilRunState;

@@ -732,6 +732,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"council.tool": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Council",
+			label: "Agent-Callable Council",
+			description:
+				"Expose the `convene` tool so the agent can consult the reviewers, or convene a full adjudicated run, without you typing /council. Both actions spend on every configured council role.",
+		},
+	},
+
+	"council.autonomous": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Council",
+			label: "Autonomous Convening",
+			description:
+				"Let the agent convene the council on its own judgment instead of telling you what it would cost and waiting. It still reports the spend once the run settles. Requires Agent-Callable Council.",
+		},
+	},
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Appearance
 	// ────────────────────────────────────────────────────────────────────────
@@ -4991,12 +5015,13 @@ export const SETTINGS_SCHEMA = {
 
 	"task.showResolvedModelBadge": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Show Resolved Model Badge",
-			description: "Display the actual model ID used by each subagent in the task widget status line",
+			description:
+				"Show each subagent's resolved provider/model after its context gauge in the task widget, suffixed with ++ when a live advisor watches it",
 		},
 	},
 

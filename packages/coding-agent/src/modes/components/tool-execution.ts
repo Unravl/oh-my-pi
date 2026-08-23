@@ -436,6 +436,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	// time-derived rows (current-tool elapsed, retry countdown) cannot drift
 	// a committed byte on later rebuilds (theme epoch, image toggles).
 	#taskRenderNowMs = Date.now();
+	// Ctor-latched start for live timeout footers. Replaced by details.startedAtMs
+	// when the tool reports execute start, so approval/arg-stream time is not counted.
+	#startedAtMs = Date.now();
+	// Frozen when any row of this block has committed, matching the task clock.
+	#elapsedNowMs = Date.now();
 	// Set on each `render()` when the last painted pending shape must be
 	// replayed wholesale when the first result arrives. Reset gates key off
 	// these so a topology-changing update that lands before the shape reaches
@@ -797,6 +802,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (this.#maybeFreezeBackgroundTask()) return;
 		this.#spinnerFrame = frame;
 		this.#renderState.spinnerFrame = frame;
+		if (this.#toolName === "bash" || this.#toolName === "eval") {
+			const ctx = this.#renderState.renderContext;
+			if (ctx && (this.#liveRegion?.isBlockUncommitted?.(this) ?? true)) {
+				this.#elapsedNowMs = Date.now();
+				ctx.nowMs = this.#elapsedNowMs;
+			}
+		}
 		this.#ui.requestComponentRender(this);
 	}
 
@@ -1403,6 +1415,14 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				// Pass raw output and expanded state - renderer handles width-aware truncation
 				const output = this.#getTextOutput().trimEnd();
 				context.output = output;
+				const detailsStarted = (this.#result.details as { startedAtMs?: unknown } | undefined)?.startedAtMs;
+				if (typeof detailsStarted === "number" && Number.isFinite(detailsStarted)) {
+					this.#startedAtMs = detailsStarted;
+				}
+				context.startedAtMs = this.#startedAtMs;
+				const uncommitted = this.#liveRegion?.isBlockUncommitted?.(this) ?? true;
+				if (uncommitted) this.#elapsedNowMs = Date.now();
+				context.nowMs = this.#elapsedNowMs;
 			}
 			context.expanded = this.#expanded;
 			context.previewLines = BASH_DEFAULT_PREVIEW_LINES;
@@ -1412,6 +1432,18 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			context.output = output;
 			context.expanded = this.#expanded;
 			context.previewLines = EVAL_DEFAULT_PREVIEW_LINES;
+			context.timeout = normalizeTimeoutSeconds(
+				this.#args?.timeout ?? (Array.isArray(this.#args?.cells) ? this.#args.cells[0]?.timeout : undefined),
+				3600,
+			);
+			const detailsStarted = (this.#result.details as { startedAtMs?: unknown } | undefined)?.startedAtMs;
+			if (typeof detailsStarted === "number" && Number.isFinite(detailsStarted)) {
+				this.#startedAtMs = detailsStarted;
+			}
+			context.startedAtMs = this.#startedAtMs;
+			const uncommitted = this.#liveRegion?.isBlockUncommitted?.(this) ?? true;
+			if (uncommitted) this.#elapsedNowMs = Date.now();
+			context.nowMs = this.#elapsedNowMs;
 		} else if (this.#toolName === "task") {
 			// Once a result snapshot exists the task renderer's `renderResult`
 			// draws every dispatched agent as a progress/result line, so tell

@@ -292,6 +292,34 @@ export const COUNCIL_ADJUDICATION_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
+/**
+ * A consult answer's ceiling. Far below the plan budget on purpose: a consult reply lands in the
+ * calling agent's context alongside every other reviewer's, so N reviewers must still compose into
+ * one readable tool result rather than displacing the conversation that asked the question.
+ */
+export const COUNCIL_CONSULT_ANSWER_CHAR_LIMIT = 12_000;
+
+/**
+ * A consult answers in prose, so the envelope is one string field rather than a finding contract.
+ *
+ * It is still a schema, and still `strict`, for two reasons that have nothing to do with rigour:
+ * an explicit caller schema is what stops a consult inheriting the *parent* session's output schema,
+ * and a named field extracts deterministically instead of arriving JSON-quoted through the raw-text
+ * yield fallback.
+ */
+export const COUNCIL_CONSULT_SCHEMA = {
+	type: "object",
+	properties: {
+		answer: { type: "string", minLength: 1, maxLength: COUNCIL_CONSULT_ANSWER_CHAR_LIMIT },
+	},
+	required: ["answer"],
+	additionalProperties: false,
+} as const;
+
+export interface CouncilConsultAnswer {
+	answer: string;
+}
+
 export class CouncilSchemaValidationError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -350,6 +378,10 @@ export function councilSlotPrefix(slotIndex: number): string {
 		remainder = Math.floor(remainder / 26) - 1;
 	} while (remainder >= 0);
 	return prefix;
+}
+
+export function validateCouncilConsultAnswer(candidate: unknown): CouncilConsultAnswer {
+	return validateSchema<CouncilConsultAnswer>(COUNCIL_CONSULT_SCHEMA, candidate, "Council consult answer");
 }
 
 export function validateCouncilPlannerOutput(candidate: unknown): CouncilPlannerOutput {

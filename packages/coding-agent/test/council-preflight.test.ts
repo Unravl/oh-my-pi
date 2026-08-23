@@ -553,7 +553,7 @@ describe("council dispatch preflight", () => {
 		const plan = await preflightCouncilDispatch(host(), task);
 
 		// The word-aligned slugger owns the name; nothing summarizes the task first.
-		expect(publicationSpy).toHaveBeenCalledWith(planRoot, task);
+		expect(publicationSpy).toHaveBeenCalledWith(planRoot, task, "command");
 		expect(plan.publicationTarget).toEqual(publicationTarget);
 	});
 
@@ -840,6 +840,93 @@ describe("council dispatch preflight", () => {
 			schemaMode: "strict",
 		});
 		expect(policySpy).toHaveBeenCalledWith(expect.objectContaining({ agent: "council-adjudicator" }));
+	});
+
+	it("delegates adjudication to the planner's model for an agent-convened run with no adjudicator assigned", async () => {
+		// Main-mode adjudication waits for the session to go idle; the `council` tool call that convened
+		// the run is what would have to finish first, so main mode here deadlocks rather than degrading.
+		const plan = await preflightCouncilDispatch(host(), "Change auth", { origin: "agent" });
+
+		expect(plan.origin).toBe("agent");
+		expect(plan.adjudicator).toMatchObject({
+			mode: "delegated",
+			requestedSelector: "@slow",
+			resolvedSelector: "planner/slow:max",
+			model: plannerModel,
+		});
+		expect(plan.adjudicatorRequest).toMatchObject({ agent: "council-adjudicator", model: "planner/slow:max" });
+		// The substitution is announced, not silent: the operator is paying one model to both plan and judge.
+		expect(plan.warnings).toContain(
+			"No model is assigned to the `adjudicator` role, and an agent-convened run cannot adjudicate in your main session; planner/slow adjudicates as well as plans. Assign the Council Adjudicator row to separate them.",
+		);
+		// Advisory, not degrading: the run still produces a real adjudicated plan.
+		expect(plan.degraded).toBeFalse();
+	});
+
+	it("keeps an assigned adjudicator and mints a brief stem for an agent-convened run", async () => {
+		const plan = await preflightCouncilDispatch(
+			host({ settings: settings({ roles: { adjudicator: "review/two" } }) }),
+			"Change auth",
+			{ origin: "agent" },
+		);
+
+		expect(plan.adjudicator).toMatchObject({ mode: "delegated", model: otherMemberModel });
+		expect(plan.warnings).toEqual([]);
+		// The stem is the whole mechanism keeping an agent brief out of `listPlanFiles`.
+		expect(publicationSpy).toHaveBeenCalledWith(planRoot, "Change auth", "agent");
+	});
+
+	it("applies the operator's advisor toggles to a dispatch at either origin", async () => {
+		// A dispatch reconciles into one adjudicated artifact, so the advisor is the operator's quality
+		// knob on that pipeline and `origin` has no business overriding it. Only a consult forces
+		// advisors off: its entire product is N independent reads, and the `advisor` role is a single
+		// shared model that would correlate them (see council-consult.test.ts).
+		const configured = settings({
+			roles: { adjudicator: "review/two" },
+			advisor: { planner: true, reviewers: true, adjudicator: true },
+		});
+
+		const agentRun = await preflightCouncilDispatch(host({ settings: configured }), "Change auth", {
+			origin: "agent",
+		});
+		const commandRun = await preflightCouncilDispatch(host({ settings: configured }), "Change auth");
+
+		for (const run of [agentRun, commandRun]) {
+			expect(run.planner.advisor).toBeTrue();
+			expect(run.members.map(member => member.advisor)).toEqual([true]);
+			expect(run.adjudicator).toMatchObject({ mode: "delegated", advisor: true });
+			for (const request of [run.plannerRequest, ...run.memberRequests, run.adjudicatorRequest!]) {
+				expect(request.advisor).toBeTrue();
+			}
+		}
+	});
+
+	it("serves round 1 from a member with no round pin, at either round count", async () => {
+		// An omitted `round` means EVERY configured round, so such a member is always in round 1. The
+		// default roster in this suite is exactly that shape, which is why it must be asserted rather
+		// than assumed.
+		const single = await preflightCouncilDispatch(host(), "Change auth");
+		expect(single.members.map(member => member.rounds)).toEqual([[1]]);
+
+		const dual = await preflightCouncilDispatch(
+			host({
+				settings: settings({
+					rounds: 2,
+					members: [
+						{ role: "reviewer", enabled: true },
+						{ role: "second", enabled: true, round: 2 },
+					],
+					roles: { reviewer: "review/one:high", second: "review/two:high" },
+				}),
+			}),
+			"Change auth",
+		);
+		expect(dual.members.map(member => [member.role, member.rounds])).toEqual([
+			["reviewer", [1, 2]],
+			["second", [2]],
+		]);
+		// Round 1 is staffed solely by the unpinned member, so it must not have been treated as inert.
+		expect(dual.inert).toEqual([]);
 	});
 
 	it("refuses an adjudicator role mapping to several models", async () => {

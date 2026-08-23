@@ -581,6 +581,10 @@ export class CouncilController {
 			return;
 		}
 		if (manifest.state === "interrupted" || manifest.state === "failed") return;
+		// An agent-convened run answers the tool that asked for it; its brief was never a plan-review
+		// candidate, so offering the operator an approval screen would hijack a turn nobody asked to
+		// spend. The pane, cards, and stats still render exactly as for a `/council` run.
+		if (manifest.origin === "agent") return;
 		if (manifest.published) void this.#triggerPlanApproval(manifest);
 	}
 

@@ -3,6 +3,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ADVISOR_MARKER } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 
 beforeAll(async () => {
 	await initTheme();
@@ -62,7 +63,7 @@ describe("status line model segment advisor badge", () => {
 	it("appends a success-colored advisor symbol when all advisors run", () => {
 		const rendered = renderSegment("model", createModelContext(true));
 		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).toContain(theme.fg("success", ` ${theme.icon.advisor}`));
+		expect(rendered.content).toContain(theme.fg("success", ADVISOR_MARKER));
 	});
 
 	it("colors the badge by the worst roster status", () => {
@@ -74,7 +75,7 @@ describe("status line model segment advisor badge", () => {
 				{ name: "b", status: "quota_exhausted" },
 			],
 		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("warning", ` ${theme.icon.advisor}`));
+		expect(renderSegment("model", ctx).content).toContain(theme.fg("warning", ADVISOR_MARKER));
 		ctx.session.getAdvisorStatusOverview = () => ({
 			configured: true,
 			advisors: [
@@ -82,13 +83,13 @@ describe("status line model segment advisor badge", () => {
 				{ name: "b", status: "quota_exhausted" },
 			],
 		});
-		expect(renderSegment("model", ctx).content).toContain(theme.fg("error", ` ${theme.icon.advisor}`));
+		expect(renderSegment("model", ctx).content).toContain(theme.fg("error", ADVISOR_MARKER));
 	});
 
 	it("omits the badge when the advisor is inactive", () => {
 		const rendered = renderSegment("model", createModelContext(false));
 		expect(rendered.content).toContain("Test Model");
-		expect(rendered.content).not.toContain(theme.icon.advisor);
+		expect(rendered.content).not.toContain(ADVISOR_MARKER);
 	});
 });
 

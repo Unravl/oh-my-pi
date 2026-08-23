@@ -54,6 +54,7 @@ import {
 	formatToolWorkingDirectory,
 	previewWindowRows,
 	replaceTabs,
+	resolveLiveElapsedSeconds,
 } from "./render-utils";
 import { extractLeadingCdTarget, tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -348,6 +349,8 @@ export interface BashToolDetails {
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
 	wallTimeMs?: number;
+	/** Epoch ms when execute started; live footer uses this until wallTimeMs lands. */
+	startedAtMs?: number;
 	/** Exit code of a command that ran to completion but failed (non-zero). */
 	exitCode?: number;
 	/** True when the command was killed by its timeout deadline (not a failure). */
@@ -1006,6 +1009,16 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			if (timeoutClampNotice) pendingNotices.push(timeoutClampNotice);
 		}
 
+		const startedAtMs = Date.now();
+		const onStreamUpdate: AgentToolUpdateCallback<BashToolDetails> | undefined = onUpdate
+			? update => {
+					onUpdate({
+						...update,
+						details: { startedAtMs, ...update.details },
+					});
+				}
+			: undefined;
+
 		if (asyncRequested) {
 			if (!this.session.asyncJobManager) {
 				throw new ToolError("Async job manager unavailable for this session.");
@@ -1019,7 +1032,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				notices: pendingNotices,
 
 				resolvedEnv,
-				onUpdate,
+				onUpdate: onStreamUpdate,
 				forwardUpdates: false,
 			});
 			return this.#buildBackgroundStartResult(job.jobId, "", timeoutSec, {
@@ -1057,7 +1070,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				notices: pendingNotices,
 
 				resolvedEnv,
-				onUpdate,
+				onUpdate: onStreamUpdate,
 				forwardUpdates: !startBackgrounded,
 			});
 			if (startBackgrounded) {
@@ -1226,7 +1239,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				handle = createRaced.handle;
 
 				// Emit partial update so the editor can embed the live terminal card.
-				onUpdate?.({ content: [], details: { terminalId: handle.terminalId } });
+				onStreamUpdate?.({ content: [], details: { terminalId: handle.terminalId } });
 
 				const exitPromise = handle.waitForExit();
 				let exitStatus!: ClientBridgeTerminalExitStatus;
@@ -1308,7 +1321,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						continue;
 					}
 					lastPolledOutput = pollOutput;
-					onUpdate?.({
+					onStreamUpdate?.({
 						content: [{ type: "text", text: pollOutput.output }],
 						details: { terminalId: handle.terminalId },
 					});
@@ -1410,7 +1423,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					env: resolvedEnv,
 					artifactPath,
 					artifactId,
-					onChunk: streamTailUpdates(tailBuffer, onUpdate),
+					onChunk: streamTailUpdates(tailBuffer, onStreamUpdate),
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
@@ -1468,6 +1481,10 @@ export interface BashRenderContext {
 	previewLines?: number;
 	/** Timeout in seconds */
 	timeout?: number;
+	/** Epoch ms when the command started; live footer elapsed source. */
+	startedAtMs?: number;
+	/** Frozen clock for committed rows; omit while the block is still live. */
+	nowMs?: number;
 }
 
 export interface ShellRendererConfig<TArgs> {
@@ -1608,6 +1625,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedIsPartial: boolean | undefined;
 			let cachedLines: readonly string[] | undefined;
 			let cachedPreviewWindow: number | undefined;
+			let cachedLiveWallSeconds: number | undefined;
 
 			return markFramedBlockComponent({
 				render: (width: number): readonly string[] => {
@@ -1623,6 +1641,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 					const isPartial = options.isPartial === true;
 					const previewWindow = previewWindowRows();
+					const startedAtMs = details?.startedAtMs ?? renderContext?.startedAtMs;
+					const liveWallSeconds = resolveLiveElapsedSeconds({
+						isPartial,
+						startedAtMs,
+						nowMs: renderContext?.nowMs,
+						hasFinalWall: details?.wallTimeMs !== undefined,
+					});
 
 					if (
 						cachedLines !== undefined &&
@@ -1631,7 +1656,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedExpanded === expanded &&
 						cachedRawOutput === rawOutput &&
 						cachedIsPartial === isPartial &&
-						cachedPreviewWindow === previewWindow
+						cachedPreviewWindow === previewWindow &&
+						cachedLiveWallSeconds === liveWallSeconds
 					) {
 						return cachedLines;
 					}
@@ -1655,6 +1681,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					}
 					if (wallTimeMs !== undefined) {
 						statsParts.push(`Wall: ${formatWallTimeSeconds(wallTimeMs)}s`);
+					} else if (liveWallSeconds !== undefined) {
+						statsParts.push(`Wall: ${liveWallSeconds}s`);
 					}
 					if (timeoutDisabled) {
 						statsParts.push("Timeout: disabled");
@@ -1749,6 +1777,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
 					cachedPreviewWindow = previewWindow;
+					cachedLiveWallSeconds = liveWallSeconds;
 					cachedLines = framed;
 					return framed;
 				},
@@ -1761,6 +1790,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedRawOutput = undefined;
 					cachedIsPartial = undefined;
 					cachedPreviewWindow = undefined;
+					cachedLiveWallSeconds = undefined;
 				},
 			});
 		},
@@ -1769,10 +1799,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	};
 }
 
-export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
-	resolveTitle: () => "Bash",
-	resolveCommand: args => args?.command,
-	resolveCwd: args => args?.cwd,
-	resolveEnv: args => args?.env,
-	showHeader: false,
-});
+export const bashToolRenderer = {
+	...createShellRenderer<BashRenderArgs>({
+		resolveTitle: () => "Bash",
+		resolveCommand: args => args?.command,
+		resolveCwd: args => args?.cwd,
+		resolveEnv: args => args?.env,
+		showHeader: false,
+	}),
+	// Live timeout footer consumes elapsed seconds; tick only when a timeout is
+	// on the call so headerless pending previews stay idle.
+	animatedPartialResult: (args: BashRenderArgs | undefined) => typeof args?.timeout === "number" && args.timeout > 0,
+};

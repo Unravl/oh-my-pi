@@ -7,6 +7,7 @@ import { Effort } from "@oh-my-pi/pi-ai";
 import { parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import { parseAgentFields } from "../discovery/helpers";
 import councilAdjudicatorMd from "../prompts/agents/council-adjudicator.md" with { type: "text" };
+import councilConsultantMd from "../prompts/agents/council-consultant.md" with { type: "text" };
 import councilMemberMd from "../prompts/agents/council-member.md" with { type: "text" };
 import councilPlannerMd from "../prompts/agents/council-planner.md" with { type: "text" };
 import designerMd from "../prompts/agents/designer.md" with { type: "text" };
@@ -53,6 +54,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "council-planner.md", template: councilPlannerMd },
 	{ fileName: "council-member.md", template: councilMemberMd },
+	{ fileName: "council-consultant.md", template: councilConsultantMd },
 	{ fileName: "council-adjudicator.md", template: councilAdjudicatorMd },
 	{
 		fileName: "task.md",

@@ -1,5 +1,5 @@
 import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { councilRoleLabel } from "../config/model-roles";
 import type { Settings } from "../config/settings";
@@ -63,16 +63,24 @@ import {
 	type CouncilPlannerSnapshot,
 	type CouncilResolvedRosterMember,
 	type CouncilRoundMemberRecord,
+	type CouncilRunOrigin,
 	type CouncilUsage,
 	councilResumeMismatches,
 	councilStateLabel,
+	DEFAULT_COUNCIL_RUN_ORIGIN,
 	isCouncilResumableManifest,
 	isCouncilRosterOverResumeLimit,
 	isCouncilTerminalState,
 	parseCouncilInstructionSnapshot,
 	parseCouncilManifest,
 } from "./state";
-import { type CouncilRunStats, loadCouncilAdjudications, summarizeCouncilRun } from "./stats";
+import {
+	type CouncilRunStats,
+	councilChildUsage,
+	loadCouncilAdjudications,
+	summarizeCouncilRun,
+	zeroCouncilUsage,
+} from "./stats";
 import { type CouncilStorage, CouncilStorageError, createCouncilStorage } from "./storage";
 
 const COUNCIL_CANCEL_DRAIN_TIMEOUT_MS = 5_000;
@@ -136,6 +144,29 @@ export interface CouncilKickoffPreview {
 }
 
 /**
+ * The one pre-spend line: the run id, its per-round roster, and every model — advisors included —
+ * that is about to be billed. Sanitized, because every model string ultimately came from a provider.
+ *
+ * Shared by `/council` and by the `convene` tool so the two can never disagree about what a run is
+ * about to cost. The `++model` suffix is load-bearing rather than decorative: an advisor is a second
+ * model charged to the role it watches, and omitting it understates the spend the reader is being
+ * asked to accept.
+ */
+export function formatCouncilKickoff(preview: CouncilKickoffPreview): string {
+	const advisorSuffix = (model: string | undefined): string => (model ? ` ++${model}` : "");
+	const rounds: string[] = [];
+	for (let round = 1; round <= preview.rounds; round++) {
+		const serving = preview.members
+			.filter(member => member.rounds.includes(round))
+			.map(member => `${councilRoleLabel(member.role)}=${member.model}${advisorSuffix(member.advisorModel)}`);
+		rounds.push(`round ${round}: [${serving.join(", ")}]`);
+	}
+	return sanitizeText(
+		`${preview.resumed ? "Resuming" : "Starting"} ${preview.runId}: planner=${preview.plannerModel}${advisorSuffix(preview.plannerAdvisorModel)}, adjudicator=${preview.adjudicator.model} (${preview.adjudicator.mode})${advisorSuffix(preview.adjudicator.advisorModel)}, ${rounds.join(", ")}.`,
+	);
+}
+
+/**
  * A durable council summary card the coordinator just handed to the session, plus everything a
  * presentation layer needs to mirror it live. `deferred` is true when the copy was queued for the
  * next turn (Main was streaming) rather than appended immediately.
@@ -154,6 +185,12 @@ export interface CouncilRunOptions {
 	 * that reaches a *cached* coordinator still needs its own `runtime.output` for this one run.
 	 */
 	onKickoff?: (preview: CouncilKickoffPreview) => void | Promise<void>;
+	/**
+	 * Who convened this run. `start` only; `resume` reads the origin back off the manifest, because a
+	 * run's origin is immutable and decides both its published stem and whether Main may adjudicate.
+	 * Defaults to `command`.
+	 */
+	origin?: CouncilRunOrigin;
 }
 
 export interface CouncilMemberLiveProgress {
@@ -277,27 +314,6 @@ function errorCode(error: unknown): string | undefined {
 	return error && typeof error === "object" && "code" in error && typeof error.code === "string"
 		? error.code
 		: undefined;
-}
-
-function usageCost(result: StructuredSubagentResult["result"]): number {
-	const usage = result.usage;
-	if (!usage || typeof usage !== "object" || !("cost" in usage)) return 0;
-	const cost = usage.cost;
-	if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) return cost;
-	if (
-		cost &&
-		typeof cost === "object" &&
-		"total" in cost &&
-		typeof cost.total === "number" &&
-		Number.isFinite(cost.total)
-	) {
-		return Math.max(0, cost.total);
-	}
-	return 0;
-}
-
-function zeroUsage(): CouncilUsage {
-	return { requests: 0, tokens: 0, cost: 0 };
 }
 
 function rosterFromPlan(plan: CouncilDispatchPlan): CouncilResolvedRosterMember[] {
@@ -629,7 +645,10 @@ export class CouncilCoordinator {
 		let dispatch: CouncilDispatchPlan | undefined;
 		let beganExecution = false;
 		try {
-			dispatch = await preflightCouncilDispatch(this.#host, task, { signal: this.#abortController.signal });
+			dispatch = await preflightCouncilDispatch(this.#host, task, {
+				signal: this.#abortController.signal,
+				origin: options?.origin ?? DEFAULT_COUNCIL_RUN_ORIGIN,
+			});
 			this.#abortController.signal.throwIfAborted();
 			const activeCoordinator = activeCoordinators.get(dispatch.sessionId);
 			if (activeCoordinator && activeCoordinator !== this) {
@@ -711,6 +730,23 @@ export class CouncilCoordinator {
 		return (await this.#storage.list())
 			.filter(isCouncilResumableManifest)
 			.sort((a, b) => Date.parse(b.timestamps.createdAt) - Date.parse(a.timestamps.createdAt))[0];
+	}
+
+	/**
+	 * The adjudicated plan of a run that reached its final round, read back from the durable artifact
+	 * with the adjudication metadata frame stripped.
+	 *
+	 * Deliberately sourced from `planVersions`, not from the published file: the plan version is
+	 * written and checkpointed before publication, so a run that adjudicated but failed to publish
+	 * still yields its plan, and no caller has to know the publication naming scheme. Returns
+	 * `undefined` when the run never produced a final version.
+	 */
+	async finalPlan(manifest: CouncilManifest | undefined = this.snapshot): Promise<string | undefined> {
+		const version = manifest?.planVersions.find(candidate => candidate.kind === "final");
+		if (!manifest || !version) return undefined;
+		this.#storage ??= createCouncilStorage(this.#host.toolSession);
+		const stored = await this.#storage.readArtifact(version.artifact);
+		return decodeMetadataFrame<PersistedAdjudicationMetadata>(stored, ADJUDICATION_METADATA_MARKER).content;
 	}
 
 	async cancelForSessionTransition(): Promise<void> {
@@ -816,9 +852,13 @@ export class CouncilCoordinator {
 				}
 				throw new Error("A council publication collision is terminal and cannot be resumed");
 			}
+			// The persisted origin, never the caller's: an agent-convened run resumed from `/council
+			// resume` must keep its delegated adjudicator, or the identity check would refuse it for an
+			// adjudicator change the operator never made.
 			dispatch = await preflightCouncilDispatch(this.#host, manifest.task, {
 				promisedOutputPath: manifest.outputPath,
 				signal: this.#abortController.signal,
+				origin: manifest.origin ?? DEFAULT_COUNCIL_RUN_ORIGIN,
 			});
 			this.#abortController.signal.throwIfAborted();
 			const activeCoordinator = activeCoordinators.get(dispatch.sessionId);
@@ -1100,7 +1140,7 @@ export class CouncilCoordinator {
 		this.#setSoloChild(undefined);
 		this.#liveMembers.delete(this.#memberProgressKey(COUNCIL_PLANNER_PROGRESS_ROUND, COUNCIL_PLANNER_PROGRESS_ORDER));
 		if (!this.snapshot || isCouncilTerminalState(this.snapshot.state)) throw abortError();
-		this.snapshot.plannerUsage ??= zeroUsage();
+		this.snapshot.plannerUsage ??= zeroCouncilUsage();
 		this.#captureUsage(result, this.snapshot.plannerUsage);
 		await this.#checkpoint();
 		signal.throwIfAborted();
@@ -1299,7 +1339,7 @@ export class CouncilCoordinator {
 				// Charged before validation and accumulated (never overwritten), so the one-shot schema
 				// retry below — which `continue`s past this point a second time — is billed too and the
 				// per-role bucket reconciles with the aggregate.
-				record.usage ??= zeroUsage();
+				record.usage ??= zeroCouncilUsage();
 				this.#captureUsage(result, record.usage);
 				await this.#checkpoint();
 				signal.throwIfAborted();
@@ -1689,7 +1729,7 @@ export class CouncilCoordinator {
 				this.#clearAdjudicatorTelemetry();
 				throw abortError();
 			}
-			this.snapshot.adjudicatorUsage ??= zeroUsage();
+			this.snapshot.adjudicatorUsage ??= zeroCouncilUsage();
 			this.#captureUsage(result, this.snapshot.adjudicatorUsage);
 			// Charged first, dropped second, with no await between: the pane sums the durable bucket
 			// with the live row, so an emit in the gap would blank the cell the turn just filled.
@@ -1858,7 +1898,7 @@ export class CouncilCoordinator {
 			if (this.#liveMembers.delete(key)) this.#emit();
 			return;
 		}
-		this.snapshot.adjudicatorUsage ??= zeroUsage();
+		this.snapshot.adjudicatorUsage ??= zeroCouncilUsage();
 		const sink = this.snapshot.adjudicatorUsage;
 		sink.requests += requests;
 		sink.tokens += tokens;
@@ -1964,16 +2004,11 @@ export class CouncilCoordinator {
 	/**
 	 * Charge a child against the run aggregate and, when supplied, its per-role bucket.
 	 *
-	 * An attached advisor runs its own model on its own ledger, which never reaches the child's
-	 * `requests`/`tokens`. It is folded into the same bucket as the principal so the `++` marker
-	 * beside a role has a real number behind it and `manifest.usage`, the HUD, and the stats table
-	 * stay reconciled — including for failed attempts and schema retries, which are charged too.
+	 * Failed attempts and schema retries are charged too, so `manifest.usage`, the HUD, and the stats
+	 * table stay reconciled with what the provider actually billed.
 	 */
 	#captureUsage(result: StructuredSubagentResult, sink?: CouncilUsage): void {
-		const advisor = result.result.advisorUsage;
-		const requests = result.result.requests + (advisor?.requests ?? 0);
-		const tokens = result.result.tokens + (advisor?.tokens ?? 0);
-		const cost = usageCost(result.result) + (advisor?.cost ?? 0);
+		const { requests, tokens, cost } = councilChildUsage(result);
 		this.snapshot!.usage.requests += requests;
 		this.snapshot!.usage.tokens += tokens;
 		this.snapshot!.usage.cost += cost;
@@ -2091,6 +2126,7 @@ export class CouncilCoordinator {
 			state: "dispatching",
 			task: dispatch.task,
 			repoRoot: dispatch.repoRoot,
+			origin: dispatch.origin,
 			outputPath: dispatch.publicationTarget.relativePath,
 			timestamps: { createdAt: now, updatedAt: now, startedAt: now },
 			config: structuredClone(dispatch.config),
@@ -2111,7 +2147,7 @@ export class CouncilCoordinator {
 				members: roster.filter(member => member.rounds.includes(index + 1)).map(blankMember),
 			})),
 			planVersions: [],
-			usage: zeroUsage(),
+			usage: zeroCouncilUsage(),
 			adjudicationBudget: { injectedChars: 0, cap: COUNCIL_ADJUDICATION_INJECTION_CAP },
 			warnings: [...dispatch.warnings],
 			degraded: dispatch.degraded,

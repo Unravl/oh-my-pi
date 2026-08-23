@@ -14,6 +14,7 @@ import { formatContextUsage } from "../modes/components/status-line/context-thre
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
 import {
+	ADVISOR_MARKER,
 	capPreviewLines,
 	formatBadge,
 	formatDuration,
@@ -24,6 +25,7 @@ import {
 	previewWindowRows,
 	replaceTabs,
 	type ToolUIStatus,
+	truncateMiddleToWidth,
 	truncateToWidth,
 } from "../tools/render-utils";
 import {
@@ -85,8 +87,11 @@ function getStatusIcon(status: AgentProgress["status"], theme: Theme, spinnerFra
 	}
 }
 
+/** Display cells budgeted for the resolved-model badge, advisor marker included. */
+const MODEL_BADGE_WIDTH = 30;
+
 /**
- * Append tool-count, context, and cost stats to a status line string.
+ * Append tool-count, context, model, and cost stats to a status line string.
  */
 function appendAgentStats(
 	line: string,
@@ -98,6 +103,8 @@ function appendAgentStats(
 		contextWindow?: number;
 		cost: number;
 		resolvedModel?: string;
+		/** A live advisor watched this child's turns — suffixes the model badge with `++`. */
+		advisor?: boolean;
 		showResolvedModelBadge?: boolean;
 	},
 	theme: Theme,
@@ -116,11 +123,20 @@ function appendAgentStats(
 				: `${formatNumber(opts.contextTokens)}`;
 		line += `${theme.sep.dot}${theme.fg("dim", ctx)}`;
 	}
+	// The model badge trails the context gauge: how full the window is and what
+	// is filling it are the same question, so they read as one pair. Middle
+	// truncation keeps the tail that disambiguates a model id (`…-sonnet-4-5`),
+	// and the advisor marker is budgeted first so it can never be the clipped byte.
+	if (opts.resolvedModel && opts.showResolvedModelBadge) {
+		const marker = opts.advisor === true ? ADVISOR_MARKER : "";
+		const model = truncateMiddleToWidth(
+			replaceTabs(sanitizeText(opts.resolvedModel)),
+			MODEL_BADGE_WIDTH - marker.length,
+		);
+		line += `${theme.sep.dot}${theme.fg("dim", `${model}${marker}`)}`;
+	}
 	if (opts.cost > 0) {
 		line += `${theme.sep.dot}${theme.fg("statusLineCost", `$${opts.cost.toFixed(2)}`)}`;
-	}
-	if (opts.resolvedModel && opts.showResolvedModelBadge) {
-		line += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(replaceTabs(opts.resolvedModel), 30))}`;
 	}
 	return line;
 }
@@ -1263,6 +1279,7 @@ function renderAgentResult(
 			contextWindow: result.contextWindow,
 			cost: result.usage?.cost.total ?? 0,
 			resolvedModel: result.resolvedModel,
+			advisor: result.advisor,
 			showResolvedModelBadge: showBadge,
 		},
 		theme,

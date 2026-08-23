@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
@@ -26,6 +26,7 @@ describe("bashToolRenderer", () => {
 
 	afterEach(() => {
 		terminal.imageProtocol = originalProtocol;
+		vi.restoreAllMocks();
 	});
 
 	it("shows rendered env assignments in the command preview", async () => {
@@ -230,6 +231,47 @@ describe("bashToolRenderer", () => {
 		expect(rendered).toContain("Wall: 0.02s");
 		expect(rendered).toContain("Timeout: 300s");
 		expect(rendered).not.toContain("Exit:");
+	});
+
+	it("renders live elapsed wall time next to the timeout while the command is running", async () => {
+		const startedAtMs = 1_700_000_000_000;
+		vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 42_000);
+		const component = bashToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "waiting; dumpfiles=0" }],
+				details: { timeoutSeconds: 1400, startedAtMs },
+				isError: false,
+			},
+			{ expanded: false, isPartial: true, renderContext: { timeout: 1400, startedAtMs } },
+			uiTheme,
+			{ command: "sleep 1400", timeout: 1400 },
+		);
+		const rendered = sanitizeText(component.render(120).join("\n"));
+		expect(rendered).toContain("Wall: 42s");
+		expect(rendered).toContain("Timeout: 1400s");
+	});
+
+	it("advances the live wall label when another second elapses", async () => {
+		const startedAtMs = 1_700_000_000_000;
+		const now = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 1_000);
+		const component = bashToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "waiting" }],
+				details: { startedAtMs },
+				isError: false,
+			},
+			{ expanded: false, isPartial: true, renderContext: { timeout: 1400, startedAtMs } },
+			uiTheme,
+			{ command: "sleep 1400", timeout: 1400 },
+		);
+		const first = component.render(120);
+		expect(sanitizeText(first.join("\n"))).toContain("Wall: 1s");
+		expect(component.render(120)).toBe(first);
+
+		now.mockReturnValue(startedAtMs + 2_400);
+		const second = component.render(120);
+		expect(second).not.toBe(first);
+		expect(sanitizeText(second.join("\n"))).toContain("Wall: 2s");
 	});
 
 	it("bypasses truncation/styling for SIXEL lines", async () => {

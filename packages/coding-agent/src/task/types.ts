@@ -436,6 +436,12 @@ export interface AgentProgress {
 	resolvedModelIsFallback?: boolean;
 	/** True when initial credential resolution substituted the authenticated parent model. */
 	authFallbackUsed?: boolean;
+	/**
+	 * True when a live advisor is attached to this child's session — `advisor.enabled`
+	 * for the spawn AND a resolvable advisor-role model, i.e. the runtime exists rather
+	 * than merely the setting. Renders as the `++` marker on the model badge.
+	 */
+	advisor?: boolean;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
@@ -509,6 +515,8 @@ export interface SingleResult {
 	resolvedModelIsFallback?: boolean;
 	/** True when initial credential resolution substituted the authenticated parent model. */
 	authFallbackUsed?: boolean;
+	/** True when a live advisor watched this child's turns. Mirrors {@link AgentProgress.advisor} onto the settled result. */
+	advisor?: boolean;
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;

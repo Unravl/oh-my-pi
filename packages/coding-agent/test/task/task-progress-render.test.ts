@@ -442,6 +442,43 @@ describe("task progress rendering", () => {
 		expect(collapsed).toContain("5 succeeded");
 		expect(collapsed).toContain("1 failed");
 	});
+
+	it("trails the resolved model badge behind the context gauge and marks an advised child", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const options: RenderResultOptions = { expanded: false, isPartial: true, spinnerFrame: 0 };
+		const render = (progress: AgentProgress): string =>
+			Bun.stripANSI(
+				taskToolRenderer
+					.renderResult({ content: [{ type: "text", text: "" }], details: detailsFor(progress) }, options, theme)
+					.render(160)
+					.join("\n"),
+			);
+		const gauged = (overrides: Partial<AgentProgress>): AgentProgress =>
+			runningProgress({
+				contextTokens: 150_500,
+				contextWindow: 500_000,
+				resolvedModel: "anthropic/claude-opus:high",
+				...overrides,
+			});
+
+		// How full the window is and what is filling it read as one adjacent pair.
+		expect(render(gauged({ id: "Advised", advisor: true }))).toContain(
+			`30.1%/500K${theme.sep.dot}anthropic/claude-opus:high++`,
+		);
+		// No live advisor, no marker — the badge must not imply one.
+		const unadvised = render(gauged({ id: "Unadvised" }));
+		expect(unadvised).toContain(`30.1%/500K${theme.sep.dot}anthropic/claude-opus:high`);
+		expect(unadvised).not.toContain("++");
+
+		// A real override, not a `get` spy: the renderer reads the module-level settings proxy,
+		// which caches its bound `get` on first use and would ignore a later spy.
+		Settings.instance.override("task.showResolvedModelBadge", false);
+		// Opting out drops the whole badge, marker included, and leaves the gauge alone.
+		const hidden = render(gauged({ id: "Hidden", advisor: true }));
+		expect(hidden).toContain("30.1%/500K");
+		expect(hidden).not.toContain("anthropic/claude-opus");
+		expect(hidden).not.toContain("++");
+	});
 });
 
 describe("task result detail-less state", () => {

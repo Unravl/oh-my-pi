@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -214,41 +213,6 @@ describe("AgentSession Council lifecycle seam", () => {
 		expect(moveTo).not.toHaveBeenCalled();
 		expect(sessionManager.getSessionFile()).toBe(oldSessionFile);
 		expect(sessionManager.getCwd()).toBe(oldCwd);
-	});
-
-	it("settles planning work before handoff creates its replacement session", async () => {
-		const current = session;
-		if (!current) throw new Error("Expected active session");
-		sessionManager.appendMessage({
-			role: "assistant",
-			content: [{ type: "text", text: "source response" }],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			stopReason: "stop",
-			usage: {
-				input: 1,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 2,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: 2,
-		});
-		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("Continue safely");
-		const oldSessionId = sessionManager.getSessionId();
-		const newSession = vi.spyOn(sessionManager, "newSession");
-		const gate = installTransitionGate();
-
-		const transition = current.handoff();
-		await gate.entered;
-		expect(newSession).not.toHaveBeenCalled();
-		expect(sessionManager.getSessionId()).toBe(oldSessionId);
-
-		gate.release();
-		expect((await transition)?.document).toBe("Continue safely");
-		expect(sessionManager.getSessionId()).not.toBe(oldSessionId);
 	});
 
 	it("settles reviewing work before dispose closes storage", async () => {

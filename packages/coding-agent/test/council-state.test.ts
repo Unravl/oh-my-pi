@@ -510,6 +510,46 @@ describe("council manifest strict parsing", () => {
 		}
 	});
 
+	it("binds the published stem to the run origin and rejects a manifest where they disagree", () => {
+		// The stem is the only thing keeping an agent-convened brief out of `listPlanFiles`, so a
+		// mismatch is corrupt rather than merely odd: an `agent` run wearing a `-plan.md` name would be
+		// offered to the operator for execution, and a `command` run wearing `-brief.md` would vanish
+		// from the plan listing it was produced for.
+		const agentBrief = manifest();
+		agentBrief.origin = "agent";
+		agentBrief.outputPath = "council-review-the-implementation-brief.md";
+		const parsed = parseCouncilManifest(JSON.parse(JSON.stringify(agentBrief)));
+		expect(parsed.origin).toBe("agent");
+		expect(parsed.outputPath).toBe("council-review-the-implementation-brief.md");
+
+		const agentWearingPlan = manifest();
+		agentWearingPlan.origin = "agent";
+		expectCorrupt(agentWearingPlan, "outputPath");
+
+		const commandWearingBrief = manifest();
+		commandWearingBrief.origin = "command";
+		commandWearingBrief.outputPath = "council-review-the-implementation-brief.md";
+		expectCorrupt(commandWearingBrief, "outputPath");
+
+		// An omitted origin is a manifest written before origins existed and reads as `command`, so its
+		// `-plan.md` name stays valid and it keeps reaching plan review.
+		const legacy = manifest();
+		delete legacy.origin;
+		expect(parseCouncilManifest(JSON.parse(JSON.stringify(legacy))).origin).toBeUndefined();
+
+		expectCorrupt({ ...manifest(), origin: "operator" }, "origin");
+	});
+
+	it("rejects a slug that ends in either published stem", () => {
+		// `council-x-brief-brief.md` and `council-x-plan-plan.md` are equally ambiguous; the slug guard
+		// has to cover every stem the grammar accepts, not just the original one.
+		for (const outputPath of ["council-x-brief-brief.md", "council-x-plan-brief.md", "council-brief-brief.md"]) {
+			expect(isValidCouncilOutputPath(outputPath)).toBeFalse();
+		}
+		expect(isValidCouncilOutputPath("council-x-brief.md")).toBeTrue();
+		expect(isValidCouncilOutputPath("council-debrief-brief.md")).toBeTrue();
+	});
+
 	it("marks only the pre-retarget plans/<slug>.md form as legacy", () => {
 		for (const outputPath of ["plans/review-the-implementation.md", `plans/${"a".repeat(80)}.md`]) {
 			expect(isLegacyCouncilOutputPath(outputPath)).toBeTrue();

@@ -16,6 +16,7 @@ import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import type { ToolSession } from "..";
 import {
+	ADVISOR_MARKER,
 	formatBadge,
 	formatDuration,
 	formatEmptyMessage,
@@ -161,6 +162,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 		const current = session.asyncJobManager?.getJob(j.id);
 		const latest = current ?? j;
 		let resolvedModel: string | undefined;
+		let advisor = false;
 		if (latest.type === "task") {
 			const progressValue = latest.latestDetails?.progress;
 			if (Array.isArray(progressValue)) {
@@ -179,6 +181,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 					const trimmed = modelValue.trim();
 					if (trimmed) resolvedModel = trimmed;
 				}
+				advisor = progressRecord?.advisor === true;
 			}
 		}
 		return {
@@ -187,7 +190,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 			status: latest.status as JobSnapshot["status"],
 			label: latest.label,
 			durationMs: Math.max(0, now - latest.startTime),
-			...(resolvedModel ? { resolvedModel } : {}),
+			...(resolvedModel ? { resolvedModel, ...(advisor ? { advisor: true } : {}) } : {}),
 			...(latest.resultText ? { resultText: latest.resultText } : {}),
 			...(latest.errorText ? { errorText: latest.errorText } : {}),
 		};
@@ -643,20 +646,19 @@ export function jobsRenderResult(
 							visibleLabelLines[visibleLabelLines.length - 1] = `${last} …`;
 						}
 						const durationText = uiTheme.fg("dim", formatDuration(job.durationMs));
-						const modelText =
+						const modelBadge =
 							job.type === "task" &&
 							typeof job.resolvedModel === "string" &&
 							job.resolvedModel.trim() &&
 							settings.get("task.showResolvedModelBadge")
-								? `${uiTheme.sep.dot}${uiTheme.fg(
-										"dim",
-										truncateToWidth(
-											replaceTabs(job.resolvedModel.trim()),
-											MODEL_BADGE_MAX_WIDTH,
-											Ellipsis.Unicode,
-										),
-									)}`
+								? // The advisor marker is budgeted before truncating so it cannot be the clipped byte.
+									`${truncateToWidth(
+										replaceTabs(job.resolvedModel.trim()),
+										MODEL_BADGE_MAX_WIDTH - (job.advisor === true ? ADVISOR_MARKER.length : 0),
+										Ellipsis.Unicode,
+									)}${job.advisor === true ? ADVISOR_MARKER : ""}`
 								: "";
+						const modelText = modelBadge ? `${uiTheme.sep.dot}${uiTheme.fg("dim", modelBadge)}` : "";
 						// Running rows in a live block shimmer their label; once the block
 						// stops animating (sealed, or a settled snapshot — spinnerFrame
 						// cleared) they render static so scrollback never keeps a mid-sweep

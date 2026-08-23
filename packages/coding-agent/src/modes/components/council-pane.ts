@@ -8,9 +8,10 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import { COUNCIL_ADVISOR_MARKER, type CouncilRunState, councilStateBadgeLabel } from "../../council/state";
+import { type CouncilRunState, councilStateBadgeLabel } from "../../council/state";
 import { formatElapsedClock } from "../../slash-commands/helpers/format";
 import {
+	ADVISOR_MARKER,
 	expandKeyHint,
 	formatBadge,
 	formatStatusIcon,
@@ -522,7 +523,7 @@ export class CouncilPaneComponent extends AnchoredLiveContainer {
 		// Middle ellipsis: a model's provider prefix *and* its version tail identify it, so a
 		// trailing clip ("anthropic/claude-sonnet…") loses the half that disambiguates.
 		// The advisor marker is budgeted before truncating so it cannot be the byte that gets clipped.
-		const marker = row.advisor === true ? COUNCIL_ADVISOR_MARKER : "";
+		const marker = row.advisor === true ? ADVISOR_MARKER : "";
 		const model = truncateMiddleToWidth(
 			sanitizedLine(row.model, TRUNCATE_LENGTHS.LINE) || "unknown model",
 			Math.max(4, modelCellWidth(width) - marker.length),
