@@ -104,7 +104,7 @@ test("EvalTool omits tools the model can still call directly", () => {
 		hasUI: false,
 		getSessionFile: () => null,
 		settings: Settings.isolated(),
-		toolRegistry: new Map([
+		toolRegistry: new Map<string, { name: string; parameters: object }>([
 			["read", read],
 			["write", write],
 		]),
@@ -125,7 +125,7 @@ test("EvalTool advertises bridged tool declarations only while Code Mode is acti
 		hasUI: false,
 		getSessionFile: () => null,
 		settings: Settings.isolated(),
-		toolRegistry: new Map([["read", read]]),
+		toolRegistry: new Map<string, { name: string; parameters: object }>([["read", read]]),
 		getEvalBridgeToolNames: () => ["eval", "read"],
 	};
 	const active = new EvalTool({

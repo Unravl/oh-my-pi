@@ -6843,7 +6843,8 @@ export class AgentSession {
 		customSystemPromptOrSignal?: string | AbortSignal,
 		signal?: AbortSignal,
 	): Promise<string | null> {
-		const customSystemPrompt = typeof customSystemPromptOrSignal === "string" ? customSystemPromptOrSignal : undefined;
+		const customSystemPrompt =
+			typeof customSystemPromptOrSignal === "string" ? customSystemPromptOrSignal : undefined;
 		const explicitSignal = customSystemPromptOrSignal instanceof AbortSignal ? customSystemPromptOrSignal : signal;
 		const sessionSignal = this.#titleGenerationAbortController.signal;
 		return generateSessionTitle(

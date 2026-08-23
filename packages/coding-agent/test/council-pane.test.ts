@@ -86,12 +86,9 @@ describe("CouncilPaneComponent", () => {
 		await initTheme();
 	});
 
-	it("has no inactive rows or live-region footprint", () => {
+	it("has no inactive rows", () => {
 		const { pane } = harness();
 		expect(pane.render(100)).toEqual([]);
-		expect(pane.getNativeScrollbackLiveRegionStart()).toBeUndefined();
-		expect(pane.isNativeScrollbackLiveRegionPinned()).toBeFalse();
-		expect(pane.isNativeScrollableLiveRegionPinned()).toBeFalse();
 	});
 
 	it("bounds compact and expanded bodies at 24 and 12 terminal rows", () => {
@@ -340,18 +337,14 @@ describe("CouncilPaneComponent", () => {
 		expect(h.requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("pins only a nonterminal snapshot and clears on terminal transition", () => {
+	it("renders only a nonterminal snapshot and clears on terminal transition", () => {
 		const h = harness();
 		const active = snapshot();
 		h.pane.update(active);
-		expect(h.pane.getNativeScrollbackLiveRegionStart()).toBe(0);
-		expect(h.pane.isNativeScrollbackLiveRegionPinned()).toBeTrue();
 		expect(h.pane.render(100).length).toBeGreaterThan(0);
 
 		h.pane.update({ ...active, state: "completed", terminal: true });
 		expect(h.pane.render(100)).toEqual([]);
-		expect(h.pane.getNativeScrollbackLiveRegionStart()).toBeUndefined();
-		expect(h.pane.isNativeScrollbackLiveRegionPinned()).toBeFalse();
 	});
 
 	it("recomputes a single bounded frame on resize without retaining old rows", () => {

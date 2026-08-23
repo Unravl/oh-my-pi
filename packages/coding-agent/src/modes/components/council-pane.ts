@@ -1,12 +1,5 @@
 import * as path from "node:path";
-import {
-	type Component,
-	Container,
-	matchesKey,
-	type NativeScrollbackLiveRegion,
-	ScrollView,
-	visibleWidth,
-} from "@oh-my-pi/pi-tui";
+import { type Component, Container, matchesKey, ScrollView, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type CouncilRunState, councilStateBadgeLabel } from "../../council/state";
 import { formatElapsedClock } from "../../slash-commands/helpers/format";
@@ -104,25 +97,8 @@ export interface CouncilPaneOptions {
 	now?: () => number;
 }
 
-/**
- * Anchored live-region container for mutable rows between transcript and editor.
- * Subclasses may opt into pinning when their mutable suffix must remain wholly
- * viewport-local instead of entering native terminal history.
- */
-export class AnchoredLiveContainer extends Container implements NativeScrollbackLiveRegion {
-	getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.children.length > 0 ? 0 : undefined;
-	}
-
-	isNativeScrollbackLiveRegionPinned(): boolean {
-		return false;
-	}
-
-	/** Compatibility spelling retained for callers using the scrollable-region name. */
-	isNativeScrollableLiveRegionPinned(): boolean {
-		return this.isNativeScrollbackLiveRegionPinned();
-	}
-}
+/** Holds mutable HUD and editor-adjacent chrome outside transcript history. */
+export class AnchoredLiveContainer extends Container {}
 
 interface RenderedCouncilRow {
 	cells: readonly string[];
@@ -255,18 +231,6 @@ export class CouncilPaneComponent extends AnchoredLiveContainer {
 
 	isActive(): boolean {
 		return this.#snapshot !== undefined && !this.#snapshot.terminal;
-	}
-
-	override getNativeScrollbackLiveRegionStart(): number | undefined {
-		return this.isActive() ? 0 : undefined;
-	}
-
-	override isNativeScrollbackLiveRegionPinned(): boolean {
-		return this.isActive();
-	}
-
-	override isNativeScrollableLiveRegionPinned(): boolean {
-		return this.isActive();
 	}
 
 	update(snapshot: CouncilPaneSnapshot | undefined): void {

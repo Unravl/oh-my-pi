@@ -8,7 +8,7 @@ import { type SubagentEventPayload, TASK_SUBAGENT_EVENT_CHANNEL } from "../../ta
 import type { EventBus } from "../../utils/event-bus";
 import type { AssistantMessageComponent } from "../components/assistant-message";
 import { createCouncilTranscriptHeaderCard } from "../components/council-transcript-message";
-import { ToolExecutionComponent, type TranscriptLiveRegionProbe } from "../components/tool-execution";
+import { ToolExecutionComponent } from "../components/tool-execution";
 import {
 	type AssistantMessageComponentContext,
 	createAssistantMessageComponent,
@@ -30,8 +30,8 @@ const LEAD_SEGMENT = "";
 export interface CouncilTranscriptMirrorContext extends AssistantMessageComponentContext {
 	eventBus?: EventBus;
 	readonly sessionManager: SessionManager;
-	/** Container the mirrored blocks mount into, and their tool blocks' live-region probe. */
-	readonly chatContainer: TranscriptLiveRegionProbe;
+	/** Container the mirrored blocks mount into. */
+	readonly chatContainer: unknown;
 	present(content: Component | readonly Component[]): void;
 }
 
@@ -276,7 +276,6 @@ export class CouncilTranscriptMirror {
 				showImages: settings.get("terminal.showImages"),
 				editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 				editAllowFuzzy: settings.get("edit.fuzzyMatch"),
-				liveRegion: this.#ctx.chatContainer,
 			},
 			this.#ctx.viewSession.getToolByName(toolName),
 			this.#ctx.ui,

@@ -111,42 +111,6 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("freezes bash elapsed once any row has committed", () => {
-		vi.useFakeTimers();
-		const startedAtMs = 1_700_000_000_000;
-		const now = vi.spyOn(Date, "now").mockReturnValue(startedAtMs);
-		const requestComponentRender = vi.fn();
-		const component = new ToolExecutionComponent(
-			"bash",
-			{ command: "sleep 600", timeout: 1400 },
-			{ liveRegion: { isBlockInLiveRegion: () => true, isBlockUncommitted: () => false } },
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender } as unknown as TUI,
-			process.cwd(),
-		);
-
-		try {
-			component.updateResult(
-				{
-					content: [{ type: "text", text: "waiting" }],
-					details: { timeoutSeconds: 1400, startedAtMs },
-				},
-				true,
-			);
-			const first = Bun.stripANSI(component.render(120).join("\n"));
-			expect(first).toContain("Wall: 0s");
-			expect(first).toContain("Timeout: 1400s");
-
-			now.mockReturnValue(startedAtMs + 8_000);
-			component.tickSpinner(1);
-			const second = Bun.stripANSI(component.render(120).join("\n"));
-			expect(second).toContain("Wall: 0s");
-			expect(second).not.toContain("Wall: 8s");
-		} finally {
-			component.stopAnimation();
-		}
-	});
-
 	it("does not tick detached async bash result snapshots", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();

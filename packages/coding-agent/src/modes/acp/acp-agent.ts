@@ -1047,7 +1047,7 @@ export class AcpAgent implements Agent {
 				if (!residualAgentInvoked) {
 					await this.#waitForExtensionUserMessages(record, residualBaseline);
 					await this.#waitForPromptEventHandlers(record);
-					this.#finishPrompt(record, { stopReason: "end_turn" });
+					this.#finishPrompt(record, commandTurn, { stopReason: "end_turn" });
 				}
 				return;
 			}
