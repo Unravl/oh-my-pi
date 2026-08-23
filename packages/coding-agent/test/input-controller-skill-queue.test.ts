@@ -383,10 +383,10 @@ describe("InputController council adjudication routing", () => {
 		editor.pendingImages = [image];
 		editor.pendingImageLinks = ["file:///tmp/council-image.png"];
 		editor.imageLinks = editor.pendingImageLinks;
-		await editor.onSubmit?.("look at this diff");
+		await editor.onSubmit?.("look at this diff [Image #1]");
 
 		expect(startPendingSubmission).toHaveBeenCalledWith({
-			text: "look at this diff",
+			text: "look at this diff [Image #1]",
 			images: [image],
 			imageLinks: ["file:///tmp/council-image.png"],
 			streamingBehavior: "followUp",
