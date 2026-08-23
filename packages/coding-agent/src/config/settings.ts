@@ -1766,6 +1766,30 @@ export class Settings {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
+		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.
+		// `true` reproduced the previous small-model-classified behavior, which is
+		// now "smart"; `false` maps to "none" so explicitly disabled configs remain
+		// off rather than inheriting the new "mechanical" default.
+		// Handles nested and quoted-dotted sources, like inspect_image above.
+		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const legacyUnexpectedStop =
+			typeof featuresObj?.unexpectedStopDetection === "boolean"
+				? featuresObj.unexpectedStopDetection
+				: typeof raw["features.unexpectedStopDetection"] === "boolean"
+					? (raw["features.unexpectedStopDetection"] as boolean)
+					: undefined;
+		if (legacyUnexpectedStop !== undefined) {
+			if (!featuresObj) {
+				raw.features = {};
+			}
+			const target = raw.features as Record<string, unknown>;
+			const current = target.unexpectedStopDetection;
+			const currentIsMode = typeof current === "string" && ["none", "mechanical", "smart"].includes(current);
+			if (!currentIsMode) {
+				target.unexpectedStopDetection = legacyUnexpectedStop ? "smart" : "none";
+			}
+			delete raw["features.unexpectedStopDetection"];
+		}
 		// task.isolation.mode: legacy values from before the pi-iso PAL refactor.
 		// `worktree` was git worktree → now lives under `rcopy`. `fuse-overlay`
 		// and `fuse-projfs` are now the platform-named `overlayfs` / `projfs`
@@ -2154,6 +2178,23 @@ export class Settings {
 			}
 			if (advisorObj) delete advisorObj.subagents;
 			delete raw["advisor.subagents"];
+		}
+
+		// Early per-agent toggles were persisted as booleans even though the
+		// runtime record contract is "on"/"off"/model pattern. Normalize each
+		// layer before merging so project-level false still overrides global true.
+		{
+			const taskObj = isRecord(raw.task) ? raw.task : undefined;
+			if (taskObj) {
+				for (const key of ["agentPrewalk", "agentAdvisor"]) {
+					const overrides = isRecord(taskObj[key]) ? taskObj[key] : undefined;
+					if (!overrides) continue;
+					for (const agentName in overrides) {
+						const value = overrides[agentName];
+						if (typeof value === "boolean") overrides[agentName] = value ? "on" : "off";
+					}
+				}
+			}
 		}
 
 		// v17 renames that used to nest under a boolean parent path:

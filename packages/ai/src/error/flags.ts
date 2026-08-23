@@ -1,4 +1,4 @@
-import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils";
+import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 import type { Api, AssistantMessage } from "../types";
 import { AwsCredentialsError } from "./aws";
 import {
@@ -165,6 +165,15 @@ const COPILOT_TRANSIENT_MODEL_CODES: Record<string, true> = {
 	model_not_supported: true,
 };
 const COPILOT_TRANSIENT_MODEL_PATTERN = /model_not_supported/i;
+// Fireworks (and other OpenAI-compat backends) can abort mid-generation with an
+// HTTP 400 `invalid_request_error` whose body reports a model-side numerical
+// fault: "Floating point NaN (not-a-number) is detected in generation". Despite
+// the request-validation wrapper this is a decode-time logits overflow, not a
+// bad request — a byte-identical replay of the same payload succeeds. The fault
+// fires before any content is emitted, so retry is replay-safe. Kept narrow
+// (both the NaN wording and "detected in generation") so it cannot swallow
+// genuine request-validation 400s.
+const GENERATION_NAN_PATTERN = /floating[ _-]?point nan\b.*\bdetected in generation/is;
 // Anthropic strict-tool grammar too large / schema too complex (400 invalid_request_error).
 // Feature-gated deployments (Azure Foundry, Baseten, …) reject `strict: true`
 // tools outright when the hosted model lacks structured outputs, e.g.
@@ -435,6 +444,9 @@ function classifyText(
 
 		// Copilot's `model_not_supported` fleet-skew rejection is transient.
 		if (statusClean === 400 && COPILOT_TRANSIENT_MODEL_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
+		// Fireworks mid-generation NaN 400 is a model-side decode fault, not a bad
+		// request; a byte-identical replay succeeds, so treat it as transient.
+		if (statusClean === 400 && GENERATION_NAN_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
 	}
@@ -631,14 +643,16 @@ export function classifyMessage(message: {
 	model?: string;
 	errorId?: number;
 	errorMessage?: string;
+	errorClassificationMessage?: string;
 	errorStatus?: number;
 }): number {
 	const existingId = message.errorId;
 	const currentStatus = message.errorStatus ?? statusFromId(existingId);
-	const textId = classifyText(message.errorMessage, currentStatus, message.api, message.provider, message.model);
+	const classificationMessage = message.errorClassificationMessage ?? message.errorMessage;
+	const textId = classifyText(classificationMessage, currentStatus, message.api, message.provider, message.model);
 
 	let kinds = ((existingId ?? 0) | textId) & KIND_MASK;
-	if (message.errorMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(message.errorMessage)) {
+	if (classificationMessage && LLAMA_CPP_TOOL_CALL_PARSE_PATTERN.test(classificationMessage)) {
 		// Deterministic local-model tool-call JSON parse failure: HTTP 500 is misleading
 		// because the same prompt reproduces the same malformed output, so the agent-level
 		// auto-retry would loop. Strip Transient so the recovery message surfaces immediately.

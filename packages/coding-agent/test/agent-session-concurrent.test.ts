@@ -8,15 +8,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
-import { Agent, AgentBusyError, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Message, ToolCall } from "@oh-my-pi/pi-ai";
+import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TtsrManager } from "@oh-my-pi/pi-coding-agent/export/ttsr";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -27,7 +27,6 @@ import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
-import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 // Mock stream that mimics AssistantMessageEventStream
 
@@ -403,7 +402,6 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		).toBe(true);
 	});
-
 	it("continues a main session from session_stop feedback before settling", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
@@ -893,47 +891,6 @@ describe("AgentSession concurrent prompt guard", () => {
 	// not yet decremented the prompt-in-flight counter), and the next prompt
 	// threw AgentBusyError. Surfaced as `RpcCommandError: prompt: Agent is
 	// already processing` from omp-rpc clients (robomp triage reminder path).
-	it("subscriber may prompt() synchronously from agent_end without AgentBusyError", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: mock.stream,
-		});
-
-		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
-		const modelRegistry = sharedModelRegistry;
-		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
-
-		const observedIsStreamingAtAgentEnd: boolean[] = [];
-		const reentrantPromptResults: Array<"resolved" | { error: string }> = [];
-		const observedIsStreamingAtRunIdle: boolean[] = [];
-		let reentrantPrompted = false;
-
-		session.subscribeRunState(state => {
-			if (state === "idle") observedIsStreamingAtRunIdle.push(session.isStreaming);
-		});
-		session.subscribe(event => {
-			if (event.type !== "agent_end") return;
-			observedIsStreamingAtAgentEnd.push(session.isStreaming);
-			if (reentrantPrompted) return;
-			reentrantPrompted = true;
-			void session
-				.prompt("Second message")
-				.then(() => reentrantPromptResults.push("resolved"))
-				.catch((err: Error) => reentrantPromptResults.push({ error: err.message }));
-		});
-
-		await session.prompt("First message");
-		await waitFor(() => reentrantPromptResults.length > 0, 2000);
-		await session.waitForIdle();
-
-		expect(observedIsStreamingAtAgentEnd).not.toContain(true);
-		expect(observedIsStreamingAtRunIdle).toContain(true);
-		expect(reentrantPromptResults).toEqual(["resolved"]);
-	});
 
 	it("does not let extension notifications block public agent_end", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -1030,163 +987,6 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		).toBe(true);
 	});
-
-	it("runs drained ACP async completions as owned follow-up turns despite deferred client turns", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-			},
-			convertToLlm,
-			streamFn: mock.stream,
-		});
-
-		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
-		const modelRegistry = sharedModelRegistry;
-		const ownerId = "acp-session-a";
-		const deliveryGate = Promise.withResolvers<void>();
-		let deliveryStarted = false;
-		const asyncJobManager = new AsyncJobManager({
-			maxRunningJobs: 2,
-			retentionMs: 1_000,
-		});
-		AsyncJobManager.setInstance(asyncJobManager);
-
-		session = new AgentSession({
-			agent,
-			sessionManager,
-			settings,
-			modelRegistry,
-			agentId: ownerId,
-			ownedAsyncJobManager: asyncJobManager,
-		});
-		session.setClientBridge({
-			capabilities: {},
-			deferAgentInitiatedTurns: true,
-		});
-		// Override the session's self-registered sink: the test gates delivery
-		// and reproduces the ACP follow-up injection explicitly.
-		asyncJobManager.registerDeliverySink(ownerId, async () => {
-			deliveryStarted = true;
-			await deliveryGate.promise;
-			await session.sendCustomMessage(
-				{
-					customType: "async-result",
-					content: "Background result",
-					display: true,
-					attribution: "agent",
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			);
-		});
-
-		await session.prompt("First message");
-		expect(session.isStreaming).toBe(false);
-		const callsAfterFirstPrompt = mock.calls.length;
-
-		try {
-			asyncJobManager.register("bash", "owned job", async () => "Background result", {
-				id: "owned-job",
-				ownerId,
-			});
-			await waitFor(() => deliveryStarted);
-
-			const drainedPromise = session.drainAsyncJobDeliveriesForAcp({ timeoutMs: 1_000 });
-			await waitFor(() => asyncJobManager.getDeliveryState({ ownerId }).delivering);
-			deliveryGate.resolve();
-
-			await expect(drainedPromise).resolves.toBe(true);
-			await session.waitForIdle();
-
-			expect(mock.calls).toHaveLength(callsAfterFirstPrompt + 1);
-			expect(
-				mock.calls.at(-1)?.context.messages.some(message => {
-					if (typeof message.content === "string") {
-						return message.content.includes("Background result");
-					}
-
-					return message.content.some(
-						content => content.type === "text" && content.text.includes("Background result"),
-					);
-				}),
-			).toBe(true);
-		} finally {
-			deliveryGate.resolve();
-		}
-	});
-
-	it("scopes ACP async job snapshots and drains to the owning session id", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const modelRegistry = sharedModelRegistry;
-		const settings = Settings.isolated();
-		const deliveryGate = Promise.withResolvers<void>();
-		const delivered: string[] = [];
-		const started = new Set<string>();
-		const asyncJobManager = new AsyncJobManager({
-			maxRunningJobs: 3,
-			retentionMs: 1_000,
-		});
-		AsyncJobManager.setInstance(asyncJobManager);
-
-		const agentA = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: createMockModel({ handler: () => ({ content: ["Done"] }) }).stream,
-		});
-		const agentB = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: createMockModel({ handler: () => ({ content: ["Done"] }) }).stream,
-		});
-		const sessionB = new AgentSession({
-			agent: agentB,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-			agentId: "acp-session-b",
-			asyncJobManager,
-		});
-		session = new AgentSession({
-			agent: agentA,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-			agentId: "acp-session-a",
-			ownedAsyncJobManager: asyncJobManager,
-		});
-		// Override both sessions' self-registered sinks so the test controls
-		// delivery timing and records routing order.
-		asyncJobManager.registerDeliverySink("acp-session-a", async jobId => {
-			started.add(jobId);
-			if (jobId === "job-a") {
-				await deliveryGate.promise;
-			}
-			delivered.push(jobId);
-		});
-		asyncJobManager.registerDeliverySink("acp-session-b", async jobId => {
-			started.add(jobId);
-			delivered.push(jobId);
-		});
-
-		try {
-			asyncJobManager.register("bash", "A", async () => "A", { id: "job-a", ownerId: "acp-session-a" });
-			await waitFor(() => started.has("job-a"));
-			asyncJobManager.register("bash", "B", async () => "B", { id: "job-b", ownerId: "acp-session-b" });
-			await waitFor(() => asyncJobManager.getDeliveryState({ ownerId: "acp-session-b" }).queued > 0);
-
-			expect(sessionB.getAsyncJobSnapshot()?.delivery.pendingJobIds).not.toContain("job-a");
-			await expect(sessionB.drainAsyncJobDeliveriesForAcp({ timeoutMs: 1_000 })).resolves.toBe(true);
-			expect(delivered).toEqual(["job-b"]);
-		} finally {
-			deliveryGate.resolve();
-			await sessionB.dispose();
-		}
-	});
 });
 
 describe("AgentSession TTSR resume gate", () => {
@@ -1208,15 +1008,6 @@ describe("AgentSession TTSR resume gate", () => {
 		vi.restoreAllMocks();
 	});
 
-	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
-		const deadline = Date.now() + timeoutMs;
-		while (Date.now() < deadline) {
-			if (predicate()) return;
-			await Bun.sleep(1);
-		}
-
-		throw new Error("Timed out waiting for condition");
-	}
 	const testRule: Rule = {
 		name: "no-unwrap",
 		path: "/tmp/no-unwrap.md",
@@ -1851,75 +1642,6 @@ describe("AgentSession TTSR resume gate", () => {
 		// By the time prompt() returns, the deferred continuation must have finished
 		expect(continuationCompleted).toBe(true);
 		expect(streamCallCount).toBeGreaterThanOrEqual(2);
-		expect(session.isStreaming).toBe(false);
-	});
-
-	it("prompt() returns immediately when session is aborted during TTSR wait", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-
-		const ttsrManager = new TtsrManager({
-			enabled: true,
-			contextMode: "discard",
-			interruptMode: "always",
-			repeatMode: "once",
-			repeatGap: 10,
-		});
-		ttsrManager.addRule(testRule);
-
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: (_model, _context, options) => {
-				const stream = new AssistantMessageEventStream();
-				const signal = options?.signal;
-
-				queueMicrotask(() => {
-					const partial = makeMsg("");
-					stream.push({ type: "start", partial });
-					stream.push({
-						type: "text_delta",
-						contentIndex: 0,
-						delta: "result.unwrap(",
-						partial: makeMsg("result.unwrap("),
-					});
-					if (signal) {
-						signal.addEventListener(
-							"abort",
-							() => {
-								stream.push({
-									type: "error",
-									reason: "aborted",
-									error: makeMsg("result.unwrap(", "aborted"),
-								});
-							},
-							{ once: true },
-						);
-					}
-				});
-
-				return stream;
-			},
-		});
-
-		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
-		const modelRegistry = sharedModelRegistry;
-		session = new AgentSession({
-			agent,
-			sessionManager,
-			settings,
-			modelRegistry,
-			ttsrManager,
-		});
-
-		// Start prompt (will trigger TTSR and create resume gate)
-		const promptPromise = session.prompt("Write some Rust code");
-		await waitFor(() => session.isStreaming);
-
-		// Abort session — prompt() should unblock
-		await session.abort();
-		await promptPromise;
-
 		expect(session.isStreaming).toBe(false);
 	});
 

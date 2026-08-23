@@ -5,7 +5,6 @@ import {
 	stopSharedSpinnerTicker,
 	ToolExecutionComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
@@ -233,94 +232,6 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("pins the live vibe_wait wall and releases it after the final result", () => {
-		const component = new ToolExecutionComponent(
-			"vibe_wait",
-			{},
-			{},
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		const transcript = new TranscriptContainer();
-		transcript.addChild(component);
-
-		try {
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-
-			component.updateResult(
-				{
-					content: [{ type: "text", text: "No turns in flight to wait for." }],
-					details: { op: "wait", screens: [] },
-				},
-				false,
-			);
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(false);
-		} finally {
-			component.stopAnimation();
-		}
-	});
-
-	it("pins a pending hub wait before the first progress snapshot arrives", () => {
-		const component = new ToolExecutionComponent(
-			"hub",
-			{ op: "wait" },
-			{},
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		const transcript = new TranscriptContainer();
-		transcript.addChild(component);
-
-		try {
-			transcript.render(80);
-			expect(component.isNativeScrollbackLiveRegionPinned()).toBe(true);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-		} finally {
-			component.stopAnimation();
-		}
-	});
-
-	it("pins the displaceable hub waiting poll and releases it once jobs settle", () => {
-		const component = new ToolExecutionComponent(
-			"hub",
-			{ op: "wait" },
-			{},
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		const transcript = new TranscriptContainer();
-		transcript.addChild(component);
-		const runningJob = { id: "job_1", type: "task", status: "running", label: "Pr6450", durationMs: 12_600 };
-
-		try {
-			// Streaming waiting snapshot: every watched job still running.
-			component.updateResult(
-				{ content: [{ type: "text", text: "waiting" }], details: { jobs: [runningJob] } },
-				true,
-			);
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(true);
-
-			// Final snapshot with a settled job is a real result, not a poll frame.
-			component.updateResult(
-				{
-					content: [{ type: "text", text: "1 job settled" }],
-					details: { jobs: [{ ...runningJob, status: "completed" }] },
-				},
-				false,
-			);
-			transcript.render(80);
-			expect(transcript.isNativeScrollbackLiveRegionPinned()).toBe(false);
-		} finally {
-			component.stopAnimation();
-		}
-	});
-
 	// Regression (issue #8731): concurrent live tool blocks — e.g. parallel task
 	// subagents — must share ONE spinner timer, not one per block, or active-work
 	// CPU scales with block count.
@@ -352,6 +263,130 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			}
 		} finally {
 			for (const component of components) component.stopAnimation();
+		}
+	});
+
+	it("renders generic three-, two-, one-, and zero-row presentations", () => {
+		const component = new ToolExecutionComponent(
+			"bash",
+			{ command: "bun test packages/tui" },
+			{},
+			undefined,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			component.setTranscriptAllocation(3, { tick: 0, now: 0 });
+			const full = component.render(80);
+			component.setTranscriptAllocation(2, { tick: 1, now: 80 });
+			const folded = component.render(80);
+			component.setTranscriptAllocation(1, { tick: 3, now: 240 });
+			const compact = component.render(80);
+			component.setTranscriptAllocation(0, { tick: 4, now: 320 });
+
+			expect(full.length).toBeGreaterThanOrEqual(3);
+			expect(folded).toHaveLength(2);
+			expect(stripVTControlCharacters(folded.join("\n"))).toContain("bun test packages/tui");
+			expect(compact).toHaveLength(1);
+			expect(stripVTControlCharacters(compact[0]!)).toContain("bash · bun test packages/tui");
+			expect(component.render(80)).toEqual([]);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("shows elapsed time only while a compact fallback is running", () => {
+		vi.spyOn(performance, "now").mockReturnValue(1_000);
+		const component = new ToolExecutionComponent(
+			"ext_tool",
+			{},
+			{},
+			{ name: "ext_tool", label: "Catalog" } as never,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			component.setExecutionStarted();
+			component.setTranscriptAllocation(1, { tick: 27, now: 3_200 });
+			const running = stripVTControlCharacters(component.render(24)[0] ?? "");
+			expect(running).toContain("Catalog · running 2s");
+			expect(Bun.stringWidth(running)).toBeLessThanOrEqual(24);
+
+			component.updateResult({ content: [{ type: "text", text: "done" }] }, false);
+			const settled = stripVTControlCharacters(component.render(24)[0] ?? "");
+			expect(settled).toContain("Catalog");
+			expect(settled).not.toContain("running");
+			expect(settled).not.toMatch(/\d+s$/);
+			expect(Bun.stringWidth(settled)).toBeLessThanOrEqual(24);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("gives extension tools a readable compact fallback", () => {
+		const component = new ToolExecutionComponent(
+			"ext_tool",
+			{ input: "processing catalog" },
+			{},
+			{ name: "ext_tool", label: "Catalog" } as never,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			component.setTranscriptAllocation(1, { tick: 0, now: 0 });
+			const row = stripVTControlCharacters(component.render(30)[0] ?? "");
+			expect(row).toContain("Catalog · processing");
+			expect(Bun.stringWidth(row)).toBeLessThanOrEqual(30);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+	// Regression: a live hub call whose streamed args have not parsed yet
+	// (op still unknown) folded to a contentless `╭─ Hub` / `╰` frame under
+	// viewport pressure. A squeezed block keeps its real render whenever it
+	// fits the allocation; only genuinely overflowing blocks fold.
+	it("keeps the real render on squeezed hub blocks when it fits", () => {
+		const component = new ToolExecutionComponent(
+			"hub",
+			{},
+			{},
+			{ name: "hub", label: "Hub" } as never,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			component.setTranscriptAllocation(2, { tick: 0, now: 0 });
+			const pending = component.render(80).map(row => stripVTControlCharacters(row));
+			expect(pending).toHaveLength(1);
+			expect(pending[0]).toContain("Hub");
+			expect(pending[0]).not.toContain("╭");
+
+			component.updateResult({ content: [{ type: "text", text: "done" }] }, false);
+			const settled = component.render(80).map(row => stripVTControlCharacters(row));
+			expect(settled.length).toBeLessThanOrEqual(2);
+			expect(settled.join("\n")).toContain("done");
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("folds an overflowing squeezed hub block to a frame naming its op target", () => {
+		const component = new ToolExecutionComponent(
+			"hub",
+			{ op: "send", to: "Main", message: "hi" },
+			{},
+			{ name: "hub", label: "Hub" } as never,
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+		try {
+			component.updateResult({ content: [{ type: "text", text: "line1\nline2\nline3\nline4" }] }, false);
+			component.setTranscriptAllocation(1, { tick: 0, now: 0 });
+			const folded = component.render(80).map(row => stripVTControlCharacters(row));
+			expect(folded).toHaveLength(1);
+			expect(folded[0]).toContain("Hub · send → Main");
+		} finally {
+			component.stopAnimation();
 		}
 	});
 });

@@ -79,6 +79,7 @@ import { type Effort, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
 import {
@@ -99,6 +100,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import { reset as resetCapabilities } from "../capability";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -191,7 +193,7 @@ import {
 } from "../thinking";
 import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
-import type { ToolSession } from "../tools";
+import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
@@ -1351,6 +1353,7 @@ export class AgentSession {
 			mcpManagerToolNames: config.mcpManagerToolNames,
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
 			ensureWriteRegistered: config.ensureWriteRegistered,
+			ensureGoalRegistered: config.ensureGoalRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getMcpServerInstructions: config.getMcpServerInstructions,
 			xdev: config.xdev,
@@ -2479,6 +2482,13 @@ export class AgentSession {
 	 * run into hidden continuity context for the next turn. Short fragments are
 	 * omitted; `convertToLlm` still strips their incomplete thinking from replay.
 	 *
+	 * Skipped for anthropic-dialect targets: the continuity quote replays the
+	 * model's own reasoning as conversation text, which Anthropic's
+	 * `reasoning_extraction` classifier refuses (verified live against Fable 5 —
+	 * the quoted fragment trips it even inside a full agentic request on
+	 * OAuth/subscription auth). transform-messages already drops the unsigned
+	 * trailing run from replay, so nothing else is lost.
+	 *
 	 * The original thinking stays on the assistant message so live render, reload,
 	 * and display-reset rebuilds keep showing it.
 	 */
@@ -2486,6 +2496,7 @@ export class AgentSession {
 		message: AssistantMessage,
 	): CustomMessage<InterruptedThinkingDetails> | undefined {
 		if (message.stopReason !== "aborted" || !isUserInterruptAbort(message)) return undefined;
+		if (preferredDialect(this.agent.state.model?.id ?? message.model) === "anthropic") return undefined;
 		const demoted = demoteInterruptedThinking(message);
 		if (!demoted || demoted.reasoning.length < INTERRUPTED_THINKING_MIN_CHARS) return undefined;
 		const interruptedAt = Date.now();
@@ -4354,6 +4365,9 @@ export class AgentSession {
 		// pre-reset history.
 		this.sessionManager.appendResetBoundary();
 
+		resetCapabilities();
+		await this.refreshBaseSystemPrompt();
+
 		return { droppedCount };
 	}
 
@@ -4630,6 +4644,11 @@ export class AgentSession {
 		return this.#tools.getEvalBridgeToolNames();
 	}
 
+	/** Tools left directly model-visible by Code Mode; undefined when inactive. */
+	getCodeModeDirectToolNames(): readonly string[] | undefined {
+		return this.#tools.getCodeModeDirectToolNames();
+	}
+
 	/** Whether a registry entry came from a built-in factory. */
 	hasBuiltInTool(name: string): boolean {
 		return this.#tools.hasBuiltInTool(name);
@@ -4865,9 +4884,9 @@ export class AgentSession {
 		return this.#maintenance.compact(customInstructions, options);
 	}
 
-	/** Cancel active manual, automatic, and handoff maintenance. */
-	abortCompaction(): void {
-		this.#maintenance.abortCompaction();
+	/** Cancel active manual, automatic, and handoff maintenance, preserving an optional source reason. */
+	abortCompaction(reason?: unknown): void {
+		void this.#maintenance.abortCompaction(reason);
 	}
 
 	/** Trigger idle compaction through the automatic maintenance flow. */
@@ -4909,7 +4928,7 @@ export class AgentSession {
 	}
 
 	/** Latest image attachments addressable by tools as `Image #N` or `attachment://N`. */
-	getImageAttachments(): { label: string; uri: string; image: ImageContent }[] {
+	getImageAttachments(): ImageAttachmentEntry[] {
 		return this.#providerBoundary.getImageAttachments();
 	}
 
@@ -4998,6 +5017,11 @@ export class AgentSession {
 	/** Scoped models for cycling (from --models flag) */
 	get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
 		return this.#models.scopedModels;
+	}
+
+	/** Replace the Ctrl+P/`/models` cycle scope (post-discovery rebuild; see {@link ModelControls.setScopedModels}). */
+	setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void {
+		this.#models.setScopedModels(scopedModels);
 	}
 
 	/** Prompt templates */
@@ -5224,6 +5248,10 @@ export class AgentSession {
 	setSlashCommands(slashCommands: FileSlashCommand[]): void {
 		this.#slashCommands = [...slashCommands];
 	}
+	/** File-based slash commands discovered at session construction (or last set). */
+	get slashCommands(): ReadonlyArray<FileSlashCommand> {
+		return this.#slashCommands;
+	}
 
 	/** Custom commands (TypeScript slash commands and MCP prompts) */
 	get customCommands(): ReadonlyArray<LoadedCustomCommand> {
@@ -5299,15 +5327,17 @@ export class AgentSession {
 				: sessionPlanUrl;
 
 		const planExists = fs.existsSync(resolvedPlanPath);
-		const activeToolNames = this.getActiveToolNames();
+		// Capability gates, not the visible surface: a Code Mode partition keeps
+		// `task` and `ask` callable through the eval bridge after demoting them.
+		const capableToolNames = this.getEnabledToolNames();
 		const content = prompt.render(planModeActivePrompt, {
 			planFilePath: displayPlanPath,
 			planExists,
 			askToolName: "ask",
 			writeToolName: "write",
 			editToolName: "edit",
-			askAvailable: activeToolNames.includes("ask"),
-			taskAvailable: activeToolNames.includes("task"),
+			askAvailable: capableToolNames.includes("ask"),
+			taskAvailable: capableToolNames.includes("task"),
 			isHashlineEditMode: this.#resolveActiveEditMode() === "hashline",
 			reentry: state.reentry ?? false,
 			iterative: state.workflow === "iterative",
@@ -5478,6 +5508,12 @@ export class AgentSession {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		// A manual `/compact` runs with the agent subscription disconnected until its
+		// cleanup finally re-drains the preserved queues. Starting a turn before then
+		// would neither persist nor forward its events and could race the in-flight
+		// history rewrite. `abort` still overtakes compaction; ordinary prompts wait
+		// here. No-op when no manual compaction is active.
+		await this.#maintenance.manualCompactionCleanup;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		// Slash/custom-command handling below rewrites `text`; keep the original
 		// so a dropped prompt is handed back exactly as the user typed it.
@@ -6793,12 +6829,22 @@ export class AgentSession {
 	 * Generate an automatic session title tied to this session's lifecycle.
 	 * Input and replan callers share the signal so disposal cancels provider and
 	 * local-worker requests instead of leaving background inference alive.
+	 * `customSystemPrompt` swaps the title prompt for special-purpose titling
+	 * (e.g. plan-save filename topics) without touching the session override.
 	 *
 	 * A caller that supplies its own `signal` has it unioned with the session's, so whichever fires
 	 * first cancels the provider request rather than leaving it to bill against a result nobody
 	 * will read.
 	 */
-	generateTitle(firstMessage: string, signal?: AbortSignal): Promise<string | null> {
+	generateTitle(firstMessage: string, signal?: AbortSignal): Promise<string | null>;
+	generateTitle(firstMessage: string, customSystemPrompt?: string, signal?: AbortSignal): Promise<string | null>;
+	generateTitle(
+		firstMessage: string,
+		customSystemPromptOrSignal?: string | AbortSignal,
+		signal?: AbortSignal,
+	): Promise<string | null> {
+		const customSystemPrompt = typeof customSystemPromptOrSignal === "string" ? customSystemPromptOrSignal : undefined;
+		const explicitSignal = customSystemPromptOrSignal instanceof AbortSignal ? customSystemPromptOrSignal : signal;
 		const sessionSignal = this.#titleGenerationAbortController.signal;
 		return generateSessionTitle(
 			firstMessage,
@@ -6807,8 +6853,8 @@ export class AgentSession {
 			this.sessionId,
 			this.model,
 			provider => this.agent.metadataForProvider(provider),
-			this.#titleSystemPrompt,
-			signal ? AbortSignal.any([sessionSignal, signal]) : sessionSignal,
+			customSystemPrompt ?? this.#titleSystemPrompt,
+			explicitSignal ? AbortSignal.any([sessionSignal, explicitSignal]) : sessionSignal,
 		);
 	}
 
@@ -6885,6 +6931,7 @@ export class AgentSession {
 			// Abort the handoff first so generic compaction cancellation cannot replace
 			// the harness reason with an unreasoned "Handoff cancelled".
 			this.#handoff.abortHandoff(new Error(options?.reason ?? "Handoff aborted by session"));
+			let manualCompactionCleanup: Promise<void> | undefined;
 			if (options?.preserveCompaction) {
 				// Manual `/compact` installed its own #compactionAbortController before
 				// this internal abort and must keep it alive (that marker is what makes
@@ -6894,7 +6941,7 @@ export class AgentSession {
 				// appendCompaction/replaceMessages, double-rewriting session history.
 				this.#maintenance.abortAutomaticCompaction();
 			} else {
-				this.abortCompaction();
+				manualCompactionCleanup = this.#maintenance.abortCompaction(options?.reason);
 			}
 			this.abortBash();
 			this.abortEval();
@@ -6902,6 +6949,10 @@ export class AgentSession {
 			this.agent.abort(options?.reason);
 			await postPromptDrain;
 			await this.agent.waitForIdle();
+			// `/compact` disconnects the agent subscription until its finally block.
+			// Do not let abort-and-replace callers start a new prompt before that cleanup
+			// finishes, or the replacement turn's events are neither forwarded nor persisted.
+			await manualCompactionCleanup;
 			await this.#drainAutolearnCapture();
 			await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
 			// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
@@ -7018,8 +7069,14 @@ export class AgentSession {
 			this.#advisors.resetSessionState();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
-			// The workspace-roots block must reflect the new session's directory set,
-			// not the previous session's — refresh before the next turn goes out.
+			// Drop the process-lifetime context-file cache so the rebuild re-reads
+			// AGENTS.md and friends from disk: the user may have edited them since
+			// the previous session started, and refreshBaseSystemPrompt() re-runs
+			// discovery but would otherwise hit stale cached bytes (issue #9273).
+			// The workspace-roots block must also reflect the new session's
+			// directory set, not the previous session's — refresh before the next
+			// turn goes out.
+			resetCapabilities();
 			await this.refreshBaseSystemPrompt();
 
 			// Emit session_switch event with reason "new" to hooks

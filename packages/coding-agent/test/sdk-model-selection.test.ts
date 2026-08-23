@@ -6,6 +6,7 @@ import { Effort, type FetchImpl } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { ModelRegistry, type ProviderConfigInput } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getModelMatchPreferences, resolveModelScope } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
@@ -181,6 +182,189 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		} finally {
 			await session.dispose();
 		}
+	});
+
+	test("defers online runtime discovery until the UI starts it after first paint", async () => {
+		const authStorage = createInMemoryAuthStorage();
+		authStoragesToClose.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("missing bundled startup model");
+		let fetches = 0;
+		const extension: ExtensionFactory = pi => {
+			pi.registerProvider("deferred-runtime-provider", {
+				baseUrl: "https://runtime.example.com/v1",
+				apiKey: "RUNTIME_KEY",
+				api: "openai-completions",
+				fetchDynamicModels: async () => {
+					fetches += 1;
+					return [
+						{
+							id: "deferred-runtime-model",
+							name: "Deferred Runtime Model",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128_000,
+							maxTokens: 8192,
+						},
+					];
+				},
+			});
+		};
+
+		const result = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			model,
+			sessionManager: SessionManager.inMemory(),
+			disableExtensionDiscovery: true,
+			extensions: [extension],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+			hasUI: true,
+		});
+
+		try {
+			expect(fetches).toBe(0);
+			expect(result.startBackgroundModelDiscovery).toBeDefined();
+			await result.startBackgroundModelDiscovery?.();
+			expect(fetches).toBe(1);
+			expect(modelRegistry.find("deferred-runtime-provider", "deferred-runtime-model")).toBeDefined();
+		} finally {
+			await result.session.dispose();
+		}
+	});
+
+	test("hydrates credential-scoped model caches before fallback validation", async () => {
+		const authStorage = createInMemoryAuthStorage();
+		authStoragesToClose.push(authStorage);
+		const providers = [
+			{ id: "opencode-go", apiKey: "go-test-key", baseUrl: "https://opencode.ai/zen/go/v1" },
+			{ id: "opencode-zen", apiKey: "zen-test-key", baseUrl: "https://opencode.ai/zen/v1" },
+			{ id: "github-copilot", apiKey: "copilot-test-key", baseUrl: "https://api.githubcopilot.com" },
+		];
+		authStorage.setRuntimeApiKey("openai", "openai-test-key");
+		const modelsPath = path.join(tempDir, "models.yml");
+		const fallbackSelectors: string[] = [];
+		for (const provider of providers) {
+			authStorage.setRuntimeApiKey(provider.id, provider.apiKey);
+			const cachedModel = buildModel({
+				id: "discovered-only-model",
+				name: "Discovered Only Model",
+				api: "openai-responses",
+				provider: provider.id,
+				baseUrl: provider.baseUrl,
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 16_384,
+			});
+			writeModelCache(
+				resolveModelCacheProviderId(provider.id, { apiKey: provider.apiKey }),
+				Date.now(),
+				[cachedModel],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+			fallbackSelectors.push(`${provider.id}/${cachedModel.id}`);
+		}
+		const modelRegistry = new ModelRegistry(authStorage, modelsPath);
+		const settings = Settings.isolated({
+			"retry.fallbackChains": { default: fallbackSelectors },
+		});
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			modelRegistry,
+			settings,
+			sessionManager: SessionManager.inMemory(),
+			disableExtensionDiscovery: true,
+			extensions: [],
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+			modelPattern: "openai/gpt-4o-mini",
+		});
+
+		try {
+			expect(session.configWarnings.filter(warning => warning.includes("discovered-only-model"))).toEqual([]);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("rehydrates credential-scoped caches after credentials change", async () => {
+		const authStorage = createInMemoryAuthStorage();
+		authStoragesToClose.push(authStorage);
+		const provider = "opencode-go";
+		const baseUrl = "https://opencode.ai/zen/go/v1";
+		const cacheDbPath = path.join(tempDir, "models.db");
+		const firstModel = buildModel({
+			id: "first-credential-model",
+			name: "First Credential Model",
+			api: "openai-responses",
+			provider,
+			baseUrl,
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 16_384,
+		});
+		authStorage.setRuntimeApiKey(provider, "first-key");
+		writeModelCache(
+			resolveModelCacheProviderId(provider, { apiKey: "first-key" }),
+			Date.now(),
+			[firstModel],
+			true,
+			"",
+			cacheDbPath,
+		);
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+
+		await modelRegistry.hydrateCredentialScopedModelCaches();
+		expect(modelRegistry.find(provider, firstModel.id)).toBeDefined();
+
+		const secondModel = buildModel({
+			...firstModel,
+			id: "second-credential-model",
+			name: "Second Credential Model",
+		});
+		authStorage.setRuntimeApiKey(provider, "second-key");
+		writeModelCache(
+			resolveModelCacheProviderId(provider, { apiKey: "second-key" }),
+			Date.now(),
+			[secondModel],
+			true,
+			"",
+			cacheDbPath,
+		);
+
+		await modelRegistry.hydrateCredentialScopedModelCaches();
+		expect(modelRegistry.find(provider, secondModel.id)).toBeDefined();
 	});
 
 	test("does not silently fallback when explicit modelPattern is unresolved", async () => {
@@ -1111,6 +1295,50 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			expect(session.model?.provider).toBe("openai-codex");
 			expect(session.model?.id).toBe("gpt-5.6-sol");
 			expect(session.model?.contextWindow).toBe(272_000);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	test("loads model overrides from the supplied agent directory", async () => {
+		await Bun.write(
+			path.join(tempDir, "models.yml"),
+			[
+				"providers:",
+				"  openai-codex:",
+				"    modelOverrides:",
+				"      gpt-5.6-sol:",
+				"        contextWindow: 123456",
+			].join("\n"),
+		);
+		const authStorage = createInMemoryAuthStorage();
+		authStoragesToClose.push(authStorage);
+		authStorage.setRuntimeApiKey("openai-codex", "codex-oauth-token");
+
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			authStorage,
+			settings: Settings.isolated({ extendedContext: true }),
+			sessionManager: SessionManager.inMemory(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+			modelPattern: "openai-codex/gpt-5.6-sol",
+		});
+
+		try {
+			expect(session.model?.provider).toBe("openai-codex");
+			expect(session.model?.id).toBe("gpt-5.6-sol");
+			expect(session.model?.contextWindow).toBe(123_456);
 		} finally {
 			await session.dispose();
 		}

@@ -1060,9 +1060,9 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	#activateAgent(ref: AgentRef): void {
 		this.#notice = undefined;
 		const focusAgent = this.#focusAgent;
-		// Transcript-only capability always opens the read-only viewer, even while
-		// its session is live; it must never route through the focus/editor path.
-		if (ref.kind === "advisor" || ref.inspectOnly || this.#remote || !focusAgent) {
+		// Aborted agents, advisor refs, and inspect-only refs are read-only
+		// transcripts; open the in-hub viewer instead of failing ensureLive.
+		if (ref.kind === "advisor" || ref.inspectOnly || ref.status === "aborted" || this.#remote || !focusAgent) {
 			this.openChat(ref.id);
 			return;
 		}

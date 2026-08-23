@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import http2 from "node:http2";
-import type { ConversationStep, CursorRule, McpToolDefinition } from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
+import type {
+	ConversationStep,
+	CursorRule,
+	McpToolDefinition,
+	RequestedModel_ModelParameterbytes,
+} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
 import {
 	AgentClientMessageSchema,
 	AgentConversationTurnStructureSchema,
@@ -106,6 +111,7 @@ import {
 	RequestContextResultSchema,
 	RequestContextSchema,
 	RequestContextSuccessSchema,
+	RequestedModel_ModelParameterbytesSchema,
 	RequestedModelSchema,
 	ResumeActionSchema,
 	SelectedContextSchema,
@@ -151,7 +157,8 @@ import {
 	toBinary,
 	toJson,
 } from "@oh-my-pi/pi-catalog/discovery/protobuf";
-import { isKimiK3ModelId } from "@oh-my-pi/pi-catalog/identity";
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
+import { isKimiK3ModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
 	$env,
@@ -203,6 +210,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { connectProxiedSocket, getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
 import { toolWireSchema } from "../utils/schema/wire";
+import { formatConnectEndStreamError } from "./connect-error-detail";
 import {
 	buildMcpStateResult,
 	buildNeutralHookResult,
@@ -309,6 +317,8 @@ const CURSOR_PROXY_TUNNEL_TIMEOUT_MS = 30_000;
 const NOT_IMPLEMENTED_SUFFIX = "not implemented by this client";
 /** Bare gRPC `resource_exhausted` end-streams (also inside a Connect error message). */
 const RESOURCE_EXHAUSTED_PATTERN = /resource.?exhausted/i;
+/** Model-resolution failures that can safely retry the exact discovery id before any server output. */
+const CURSOR_MODEL_NOT_FOUND_PATTERN = /^(?:Connect error not_found:|gRPC error 5:)/i;
 const NOT_IMPLEMENTED = `Not implemented by this client`;
 
 const conversationStateCache = new Map<string, ConversationStateStructure>();
@@ -330,6 +340,32 @@ export interface CursorOptions extends StreamOptions {
 	conversationId?: string;
 	execHandlers?: CursorExecHandlers;
 	onToolResult?: CursorToolResultHandler;
+	/** Wire model id selected after thinking-effort routing (`resolveWireModelId`). */
+	wireModelId?: string;
+}
+
+type CursorWireMode = "normalized" | "discovered";
+
+interface CursorStreamTiming {
+	startTime: number;
+	timestamp: number;
+}
+
+interface CursorRequestState {
+	conversationId: string;
+	blobStore: Map<string, Uint8Array>;
+	conversationState?: ConversationStateStructure;
+}
+
+interface CursorGrpcRequest {
+	requestBytes: Uint8Array;
+	blobStore: Map<string, Uint8Array>;
+	conversationState: ConversationStateStructure;
+}
+
+interface CursorTransportRequest extends CursorGrpcRequest {
+	/** Exact discovery id eligible for a retry because the normalized effort payload was serialized unchanged. */
+	fallbackWireModelId?: string;
 }
 
 const CONNECT_END_STREAM_FLAG = 0b00000010;
@@ -369,6 +405,15 @@ function frameConnectMessage(data: Uint8Array, flags = 0): Buffer {
 	return frame;
 }
 
+class ConnectEndStreamError extends AIError.ProviderResponseError {
+	readonly diagnosticMessage: string;
+
+	constructor(classificationMessage: string, diagnosticMessage: string) {
+		super(classificationMessage, { kind: "envelope" });
+		this.diagnosticMessage = diagnosticMessage;
+	}
+}
+
 function parseConnectEndStream(data: Uint8Array): Error | null {
 	try {
 		const payload = JSON.parse(new TextDecoder().decode(data));
@@ -376,7 +421,8 @@ function parseConnectEndStream(data: Uint8Array): Error | null {
 		if (error) {
 			const code = typeof error.code === "string" ? error.code : "unknown";
 			const message = typeof error.message === "string" ? error.message : "Unknown error";
-			return new AIError.ProviderResponseError(`Connect error ${code}: ${message}`, { kind: "envelope" });
+			const classificationMessage = `Connect error ${code}: ${message}`;
+			return new ConnectEndStreamError(classificationMessage, formatConnectEndStreamError(error));
 		}
 		return null;
 	} catch {
@@ -517,15 +563,17 @@ function omitTypeName(record: Record<string, unknown>): Record<string, unknown> 
 	return rest;
 }
 
-export const streamCursor: StreamFunction<"cursor-agent"> = (
+function streamCursorWithWireMode(
 	model: Model<"cursor-agent">,
 	context: Context,
-	options?: CursorOptions,
-): AssistantMessageEventStream => {
+	options: CursorOptions | undefined,
+	wireMode: CursorWireMode,
+	timing?: CursorStreamTiming,
+): AssistantMessageEventStream {
 	const stream = new AssistantMessageEventStream();
 
 	(async () => {
-		const startTime = performance.now();
+		const startTime = timing?.startTime ?? performance.now();
 		let firstTokenTime: number | undefined;
 
 		const output: AssistantMessage = {
@@ -543,7 +591,7 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
-			timestamp: Date.now(),
+			timestamp: timing?.timestamp ?? Date.now(),
 		};
 
 		// Declared outside the `try` because BOTH exits must drain it: an exec
@@ -587,6 +635,11 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 		let h2Settled = false;
 		let sawTurnEnded = false;
 		let endStreamError: Error | null = null;
+		// Blocks the discovered-id retry once the turn produced observable output or
+		// ran a side effect (streamed content/tool call, exec bridge, permission
+		// reply). Pure keepalive heartbeats never set it, so a `not_found` that
+		// arrives after a heartbeat but before any real work still falls back.
+		let sawProgressOrSideEffect = false;
 		// Reachable from the catch: a stream that dies mid-turn must still close
 		// and pair the blocks it left open, and `state` itself is scoped to the
 		// try below.
@@ -618,6 +671,7 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 		let baseConversationId: string | undefined;
 		let conversationId: string | undefined;
 		let usageState: UsageState | undefined;
+		let serializedFallbackWireModelId: string | undefined;
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -629,11 +683,19 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 			const blobStore = conversationBlobStores.get(conversationId) ?? new Map<string, Uint8Array>();
 			conversationBlobStores.set(conversationId, blobStore);
 			const cachedState = conversationStateCache.get(conversationId);
-			const { requestBytes, conversationState } = await buildGrpcRequest(model, context, options, {
-				conversationId,
-				blobStore,
-				conversationState: cachedState,
-			});
+			const builtRequest = await buildGrpcRequestForWireMode(
+				model,
+				context,
+				options,
+				{
+					conversationId,
+					blobStore,
+					conversationState: cachedState,
+				},
+				wireMode,
+			);
+			const { requestBytes, conversationState } = builtRequest;
+			serializedFallbackWireModelId = builtRequest.fallbackWireModelId;
 			conversationStateCache.set(conversationId, conversationState);
 			const requestContextTools = buildMcpToolDefinitions(context.tools);
 			const requestContextRules = buildCursorRequestContextRules(context.systemPrompt);
@@ -774,9 +836,14 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 
 					try {
 						const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
-						const isTurnEnded =
-							serverMessage.message.case === "interactionUpdate" &&
-							serverMessage.message.value.message?.case === "turnEnded";
+						const interaction =
+							serverMessage.message.case === "interactionUpdate" ? serverMessage.message.value : undefined;
+						const interactionCase = interaction?.message?.case;
+						// A heartbeat is a pure keepalive `processInteractionUpdate` ignores;
+						// every other frame is progress or a side effect that must block the
+						// discovered-id retry.
+						if (interactionCase !== "heartbeat") sawProgressOrSideEffect = true;
+						const isTurnEnded = interactionCase === "turnEnded";
 						// Dispatch is fire-and-forget so the socket keeps draining while a
 						// handler runs, but the promise is tracked: `done` must not be
 						// pushed while an exec handler is still resolving, or the Agent
@@ -885,6 +952,43 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 			});
 			stream.end();
 		} catch (error) {
+			const fallbackWireModelId =
+				wireMode === "normalized" &&
+				!sawProgressOrSideEffect &&
+				!options?.signal?.aborted &&
+				error instanceof Error &&
+				CURSOR_MODEL_NOT_FOUND_PATTERN.test(error.message)
+					? serializedFallbackWireModelId
+					: undefined;
+			if (fallbackWireModelId !== undefined) {
+				if (heartbeatTimer) {
+					clearInterval(heartbeatTimer);
+					heartbeatTimer = null;
+				}
+				h2Request?.close();
+				h2Client?.close();
+
+				const fallbackStream = streamCursorWithWireMode(model, context, options, "discovered", {
+					startTime,
+					timestamp: output.timestamp,
+				});
+				// The lazy watchdog observes THIS outer stream; the fallback's exec
+				// bridge marks the inner stream busy via `trackLocalWork`. Forward
+				// that busy state so a local tool on the retry turn is not aborted as
+				// a stalled provider stream (#4593 protection must survive the retry).
+				stream.forwardLocalWorkFrom(fallbackStream);
+				try {
+					for await (const event of fallbackStream) {
+						if (event.type === "start") continue;
+						stream.push(event);
+					}
+					const fallbackResult = await fallbackStream.result();
+					if (!stream.resultSettled) stream.end(fallbackResult);
+				} finally {
+					stream.forwardLocalWorkFrom(undefined);
+				}
+				return;
+			}
 			// Same reason as the success path: the Agent finalizes the synthesized
 			// call from this terminal error and clears its Cursor result buffer, so
 			// a handler still running would land its real result after `agent_end`
@@ -932,7 +1036,12 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
 			output.errorId = result.id;
-			output.errorMessage = result.message;
+			if (error instanceof ConnectEndStreamError) {
+				output.errorClassificationMessage = result.message;
+				output.errorMessage = error.diagnosticMessage;
+			} else {
+				output.errorMessage = result.message;
+			}
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
@@ -950,7 +1059,11 @@ export const streamCursor: StreamFunction<"cursor-agent"> = (
 	})();
 
 	return stream;
-};
+}
+
+/** Streams a Cursor Agent turn, retrying a discovered effort id when its normalized wire id is unavailable. */
+export const streamCursor: StreamFunction<"cursor-agent"> = (model, context, options) =>
+	streamCursorWithWireMode(model, context, options, "normalized");
 
 export type ToolCallState = ToolCall & {
 	[kStreamingBlockIndex]: number;
@@ -3155,7 +3268,8 @@ function decodeMcpArgValue(value: Uint8Array): unknown {
 	try {
 		const jsonValue = decodeJsonValue(value);
 		if (typeof jsonValue === "string") {
-			return parseToolArgsJson(jsonValue);
+			const first = jsonValue.trimStart()[0];
+			return first === "{" || first === "[" || first === '"' ? parseToolArgsJson(jsonValue) : jsonValue;
 		}
 		return jsonValue;
 	} catch {}
@@ -4473,6 +4587,17 @@ export function buildCursorRequestContextRules(systemPrompt: readonly string[] |
  */
 const CURSOR_NATIVE_TOOL_NAMES = new Set(["bash", "read", "write", "delete", "ls", "grep", "todo"]);
 
+function isJsonValue(value: unknown): value is JsonValue {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	if (!isRecord(value)) return false;
+	for (const key in value) {
+		if (!isJsonValue(value[key])) return false;
+	}
+	return true;
+}
+
 export function buildMcpToolDefinitions(tools: Tool[] | undefined): McpToolDefinition[] {
 	if (!tools || tools.length === 0) {
 		return [];
@@ -4612,7 +4737,7 @@ function buildCursorAssistantContent(
 				type: "tool-call",
 				toolCallId: item.id,
 				toolName: item.name,
-				args: item.arguments,
+				args: normalizeCursorMcpArguments(item.arguments),
 			});
 		}
 	}
@@ -4746,26 +4871,46 @@ function buildRootPromptMessagesJson(
 	return entries;
 }
 
-function isJsonValue(value: unknown): value is JsonValue {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-	if (typeof value === "number") return Number.isFinite(value);
-	if (Array.isArray(value)) return value.every(isJsonValue);
-	if (!isRecord(value)) return false;
-	for (const key in value) {
-		if (!isJsonValue(value[key])) return false;
+function normalizeCursorMcpArgument(value: unknown, seen: Set<object>): JsonValue | undefined {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : null;
+	if (typeof value !== "object") return undefined;
+	if (seen.has(value)) return undefined;
+
+	seen.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return value.map(item => normalizeCursorMcpArgument(item, seen) ?? null);
+		}
+		if (!isRecord(value)) return undefined;
+		const normalized: Record<string, JsonValue> = Object.create(null);
+		for (const key in value) {
+			if (!Object.hasOwn(value, key)) continue;
+			const normalizedItem = normalizeCursorMcpArgument(value[key], seen);
+			if (normalizedItem !== undefined) normalized[key] = normalizedItem;
+		}
+		return normalized;
+	} finally {
+		seen.delete(value);
 	}
-	return true;
+}
+
+function normalizeCursorMcpArguments(args: Record<string, unknown>): Record<string, JsonValue> {
+	const normalized: Record<string, JsonValue> = Object.create(null);
+	const seen = new Set<object>();
+	for (const name in args) {
+		if (!Object.hasOwn(args, name)) continue;
+		const normalizedValue = normalizeCursorMcpArgument(args[name], seen);
+		if (normalizedValue !== undefined) normalized[name] = normalizedValue;
+	}
+	return normalized;
 }
 
 function encodeCursorMcpArguments(toolCall: ToolCall): Record<string, Uint8Array> {
-	const encoded: Record<string, Uint8Array> = {};
-	for (const name in toolCall.arguments) {
-		const value = toolCall.arguments[name];
-		if (value === undefined) continue;
-		if (!isJsonValue(value)) {
-			throw new AIError.ValidationError(`Cursor tool argument ${toolCall.name}.${name} is not JSON-serializable`);
-		}
-		encoded[name] = encodeJsonValue(value);
+	const encoded: Record<string, Uint8Array> = Object.create(null);
+	const normalized = normalizeCursorMcpArguments(toolCall.arguments);
+	for (const name in normalized) {
+		encoded[name] = encodeJsonValue(normalized[name]);
 	}
 	return encoded;
 }
@@ -5011,20 +5156,54 @@ function extractImages(content: (TextContent | ImageContent)[]) {
 		);
 }
 
-export async function buildGrpcRequest(
+/**
+ * Resolve the Cursor Run wire model id and its parameter list.
+ *
+ * Cursor's `GetUsableModels` lists reasoning models as per-effort sibling
+ * slugs (`gpt-5.4-mini-low`, `gpt-5.6-sol-high`), and OMP copies those ids 1:1.
+ * The Run endpoint rejects a sibling slug as the wire `model_id` with
+ * `resource_exhausted` (errorId 528384); the official `cursor-agent` splits the
+ * slug into its base model id plus a `reasoning` effort parameter. Mirror that
+ * for OpenAI-family ids: strip a trailing effort tier and emit
+ * `{ id: "reasoning", value: <effort> }`.
+ *
+ * Non-OpenAI ids pass through unchanged — Cursor-native ids (`composer-*`,
+ * `cursor-grok-*`, `default`) carry no effort suffix, and Claude/other siblings
+ * need additional parameters (`thinking`, `context`) whose per-model values are
+ * not exposed by the decoded `GetUsableModels` schema, so guessing them would
+ * re-trigger 528384.
+ */
+function resolveCursorWireModel(
+	model: Model<"cursor-agent">,
+	requestModelId: string | undefined,
+	wireMode: CursorWireMode = "normalized",
+): {
+	modelId: string;
+	parameters: RequestedModel_ModelParameterbytes[];
+} {
+	const wireModelId = requestModelId ?? model.requestModelId ?? model.id;
+	if (wireMode === "discovered") return { modelId: wireModelId, parameters: [] };
+	// Cursor's fast lane follows the effort token (`-high-fast`), while the
+	// standard lane ends at it (`-high`). Preserve the lane in the base id.
+	const match = /^(.*)-(minimal|low|medium|high|xhigh|max)(-fast)?$/.exec(wireModelId);
+	const base = match?.[1];
+	const effort = match?.[2];
+	if (base && effort && (THINKING_EFFORTS as readonly string[]).includes(effort) && parseOpenAIModel(base) !== null) {
+		return {
+			modelId: `${base}${match[3] ?? ""}`,
+			parameters: [create(RequestedModel_ModelParameterbytesSchema, { id: "reasoning", value: effort })],
+		};
+	}
+	return { modelId: wireModelId, parameters: [] };
+}
+
+async function buildGrpcRequestForWireMode(
 	model: Model<"cursor-agent">,
 	context: Context,
 	options: CursorOptions | undefined,
-	state: {
-		conversationId: string;
-		blobStore: Map<string, Uint8Array>;
-		conversationState?: ConversationStateStructure;
-	},
-): Promise<{
-	requestBytes: Uint8Array;
-	blobStore: Map<string, Uint8Array>;
-	conversationState: ConversationStateStructure;
-}> {
+	state: CursorRequestState,
+	wireMode: CursorWireMode,
+): Promise<CursorTransportRequest> {
 	const blobStore = state.blobStore;
 
 	const systemPromptIds = buildCursorSystemPromptJsons(context.systemPrompt).map(json =>
@@ -5117,7 +5296,11 @@ export async function buildGrpcRequest(
 		turns,
 	});
 
-	const wireModelId = model.requestModelId ?? model.id;
+	const { modelId: wireModelId, parameters: wireParameters } = resolveCursorWireModel(
+		model,
+		options?.wireModelId,
+		wireMode,
+	);
 	const cursorMaxMode = model.cursorMaxMode === true;
 	const modelDetails = create(ModelDetailsSchema, {
 		modelId: wireModelId,
@@ -5128,6 +5311,7 @@ export async function buildGrpcRequest(
 	const requestedModel = create(RequestedModelSchema, {
 		modelId: wireModelId,
 		maxMode: cursorMaxMode,
+		parameters: wireParameters,
 	});
 
 	let runRequest = create(AgentRunRequestSchema, {
@@ -5150,6 +5334,21 @@ export async function buildGrpcRequest(
 	const replacementRequest = await options?.onPayload?.(runRequest, model);
 	if (replacementRequest !== undefined) runRequest = replacementRequest as typeof runRequest;
 
+	const discoveredWireModelId = options?.wireModelId ?? model.requestModelId ?? model.id;
+	const serializedParameters = runRequest.requestedModel?.parameters;
+	const normalizedEffortPayloadSerialized =
+		wireMode === "normalized" &&
+		wireParameters.length > 0 &&
+		wireModelId !== discoveredWireModelId &&
+		runRequest.requestedModel?.modelId === wireModelId &&
+		runRequest.modelDetails?.modelId === wireModelId &&
+		serializedParameters?.length === wireParameters.length &&
+		serializedParameters.every((parameter, index) => {
+			const expected = wireParameters[index];
+			return expected !== undefined && parameter.id === expected.id && parameter.value === expected.value;
+		});
+	const fallbackWireModelId = normalizedEffortPayloadSerialized ? discoveredWireModelId : undefined;
+
 	const clientMessage = create(AgentClientMessageSchema, {
 		message: { case: "runRequest", value: runRequest },
 	});
@@ -5168,7 +5367,17 @@ export async function buildGrpcRequest(
 		detail: detail || undefined,
 	});
 
-	return { requestBytes, blobStore, conversationState };
+	return { requestBytes, blobStore, conversationState, fallbackWireModelId };
+}
+
+/** Builds the normalized Cursor Run request used by transport callers and request inspection hooks. */
+export async function buildGrpcRequest(
+	model: Model<"cursor-agent">,
+	context: Context,
+	options: CursorOptions | undefined,
+	state: CursorRequestState,
+): Promise<CursorGrpcRequest> {
+	return buildGrpcRequestForWireMode(model, context, options, state, "normalized");
 }
 
 function hasImages(content: (TextContent | ImageContent)[]): boolean {

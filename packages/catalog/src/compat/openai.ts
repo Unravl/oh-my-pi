@@ -306,6 +306,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		modelMatchesHost(hostModel, "anthropic") || isClaudeModelId(spec.id) || isAnthropicNamespacedModelId(spec.id);
 	const isAlibaba = modelMatchesHost(hostModel, "alibabaDashscope");
 	const isNvidiaNim = modelMatchesHost(hostModel, "nvidia");
+	const isVenice = modelMatchesHost(hostModel, "venice");
 	const isQwen = isQwenModelId(spec.id);
 	// DeepSeek V4 (and other reasoning-capable DeepSeek models) reject follow-up requests in
 	// thinking mode unless prior assistant tool-call turns include `reasoning_content`. The
@@ -461,7 +462,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 				? "openrouter"
 				: isQwen && (isNvidiaNim || provider === "vllm")
 					? "qwen-chat-template"
-					: isQwen && isFireworks
+					: isQwen && (isFireworks || isVenice)
 						? "openai"
 						: isAlibaba || isQwen
 							? "qwen"
@@ -522,7 +523,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		// (issue #2299).
 		thinkingFormat,
 		kimiApiFormat: undefined,
-		reasoningDisableMode: resolveReasoningDisableMode(thinkingFormat),
+		reasoningDisableMode: isVenice ? "venice-disable-thinking" : resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 		includeEncryptedReasoning: true,
 		filterReasoningHistory: isOpenRouter && isAnthropicModel,
@@ -642,7 +643,9 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 			? "omit"
 			: isDirectDeepseekReasoning
 				? "zai-thinking-disabled"
-				: resolveReasoningDisableMode(compat.thinkingFormat);
+				: isVenice
+					? "venice-disable-thinking"
+					: resolveReasoningDisableMode(compat.thinkingFormat);
 	}
 	if (spec.compat?.omitReasoningEffort === undefined && !compat.supportsReasoningEffort) {
 		compat.omitReasoningEffort = true;
@@ -660,7 +663,9 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 		const variant: ResolvedOpenAICompat = { ...compat };
 		applyCompatOverrides(variant, whenThinkingPolicy);
 		if (whenThinkingPolicy.reasoningDisableMode === undefined) {
-			variant.reasoningDisableMode = resolveReasoningDisableMode(variant.thinkingFormat);
+			variant.reasoningDisableMode = isVenice
+				? "venice-disable-thinking"
+				: resolveReasoningDisableMode(variant.thinkingFormat);
 		}
 		if (whenThinkingPolicy.omitReasoningEffort === undefined && !variant.supportsReasoningEffort) {
 			variant.omitReasoningEffort = true;
