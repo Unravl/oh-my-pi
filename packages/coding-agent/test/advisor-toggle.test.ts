@@ -160,7 +160,34 @@ describe("AgentSession advisor toggle", () => {
 		expect(active).toBe(true);
 		expect(session.isAdvisorActive()).toBe(true);
 		expect(session.isAdvisorEnabled()).toBe(true);
-		expect(session.formatAdvisorStatus()).toContain("Advisor is enabled (anthropic/claude-sonnet-4-5)");
+		// The role value carries no `:level`, so the default Medium clamp is shown.
+		expect(session.formatAdvisorStatus()).toContain("Advisor is enabled (anthropic/claude-sonnet-4-5:medium)");
+	});
+
+	it("distinguishes two advisors on one model by their thinking effort", () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		session.toggleAdvisorEnabled();
+		expect(
+			session.applyAdvisorConfigs(
+				[
+					{ name: "Deep", model: "anthropic/claude-sonnet-4-5:high" },
+					{ name: "Quick", model: "anthropic/claude-sonnet-4-5:low" },
+				],
+				undefined,
+			),
+		).toBe(2);
+
+		const efforts = session.getAdvisorStats().advisors.map(a => a.effort);
+		expect(new Set(efforts).size).toBe(2);
+
+		const status = session.formatAdvisorStatus();
+		expect(status).toContain("anthropic/claude-sonnet-4-5:high");
+		expect(status).toContain("anthropic/claude-sonnet-4-5:low");
+
+		// `/advisor dump` must tell the two apart in its per-advisor headers too.
+		const dump = session.formatAdvisorHistoryAsText({ compact: true }) ?? "";
+		expect(dump).toContain("### Advisor: Deep (anthropic/claude-sonnet-4-5:high)");
+		expect(dump).toContain("### Advisor: Quick (anthropic/claude-sonnet-4-5:low)");
 	});
 
 	it("explicit enable rebuilds the runtime when the advisor role changes", () => {

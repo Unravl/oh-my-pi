@@ -117,6 +117,8 @@ note text
 </advisory>
 ```
 
+The transcript card that displays those notes carries the attribution the `<advisory>` element deliberately does not. Its title names the raising advisor's model as `provider/id[@upstream][:effort]`, with the `WATCHDOG.yml` name prepended when the entry is named and the render width fits both. A card that batches notes from several advisors joins their model selectors in the title when they fit, and otherwise titles `N advisors` and labels each note with its own name or model. The label is display-only: it never appears in the agent-facing `<advisory>` bytes, so the primary agent cannot weigh advice by provider.
+
 When you deliberately interrupt the agent (Esc, or a cancel from collab, ACP, RPC, the SDK, or an extension), the advisor stops auto-resuming it. An interrupting `concern`/`blocker` raised while the run is stopped is recorded as a visible advisor card instead of restarting the turn, and a concern already in flight when you interrupt is preserved the same way rather than driving a surprise resume. The advice re-enters context the next time you resume — a new message, the `.`/`c` continue shortcut, or a steer/follow-up.
 
 A normal yield the agent drove itself is treated differently from a deliberate interrupt, but it is not a blanket "always steers and resumes". The loop state and completed turn first determine the normal delivery path:

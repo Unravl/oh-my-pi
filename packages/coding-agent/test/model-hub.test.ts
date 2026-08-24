@@ -1688,11 +1688,11 @@ describe("ModelHub", () => {
 			});
 
 			const rendered = normalize(hub.render(200));
-			expect(rendered).toContain("Every round");
+			expect(rendered).not.toContain("Every round");
 			expect(rendered).toContain("Round 1");
 			expect(rendered).toContain("Round 2");
-			// Reading order is Every round, then Round 1, then Round 2, with each member under its own.
-			expect(rendered.indexOf("Everyone")).toBeGreaterThan(rendered.indexOf("Every round"));
+			// Reading order is Round 1, then Round 2, with each member under its own.
+			expect(rendered.indexOf("Everyone")).toBeGreaterThan(rendered.indexOf("Round 1"));
 			expect(rendered.indexOf("Firstonly")).toBeGreaterThan(rendered.indexOf("Round 1"));
 			expect(rendered.indexOf("Secondonly")).toBeGreaterThan(rendered.indexOf("Round 2"));
 
@@ -1763,7 +1763,7 @@ describe("ModelHub", () => {
 			hub.handleInput("r");
 			expect(onCouncilRosterChange).toHaveBeenLastCalledWith([{ role: "reviewer", enabled: true, round: 2 }]);
 			hub.handleInput("r");
-			expect(onCouncilRosterChange).toHaveBeenLastCalledWith([{ role: "reviewer", enabled: true }]);
+			expect(onCouncilRosterChange).toHaveBeenLastCalledWith([{ role: "reviewer", enabled: true, round: 1 }]);
 		});
 
 		test("the add flow chooses a round first and Escape at the chooser adds nothing", () => {
@@ -1798,6 +1798,36 @@ describe("ModelHub", () => {
 				role: "council1",
 				enabled: true,
 				round: 2,
+			});
+		});
+
+		test("the add flow requires choosing round 1 or 2 even when only 1 round is configured", () => {
+			const settings = Settings.isolated({
+				"council.members": [{ role: "reviewer", enabled: true, round: 1 }],
+				"council.rounds": 1,
+			});
+			const { hub, onCouncilRosterChange } = createHub({
+				models: [makeModel("test", "model-a")],
+				scoped: true,
+				settings,
+				hub: { initialSection: "council" },
+			});
+
+			const toAddRow = (): void => {
+				pressDown(hub, COUNCIL_DOWN_TO_FIRST_REVIEWER + 1);
+			};
+			toAddRow();
+			hub.handleInput("\n");
+			expect(footerLine(hub.render(200))).toContain("round 1");
+			expect(footerLine(hub.render(200))).not.toContain("every round");
+
+			hub.handleInput("\n"); // commit round 1
+			expect(footerLine(hub.render(200))).toContain("Reviewer:");
+			hub.handleInput("\n"); // blank name -> auto id
+			expect(onCouncilRosterChange.mock.lastCall?.[0].at(-1)).toEqual({
+				role: "council1",
+				enabled: true,
+				round: 1,
 			});
 		});
 

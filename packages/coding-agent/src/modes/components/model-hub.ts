@@ -60,7 +60,7 @@ import { bottomBorder, dividerSplit, row, splitBodyWidth, splitRow, topBorderSpl
 import { renderSegmentTrack } from "./segment-track";
 
 /** Which reviewer group a `councilRole` row renders under. */
-type CouncilRoundGroup = 1 | 2 | "every";
+type CouncilRoundGroup = 1 | 2;
 /** Per-role advisor toggles surfaced beside the Council roster. */
 type CouncilAdvisorScope = "planner" | "reviewers" | "adjudicator";
 
@@ -314,7 +314,7 @@ export class ModelHubComponent implements Component {
 	/** `council.advisor.*`, read with the same tolerance as `council.rounds`. */
 	#councilAdvisor: Record<CouncilAdvisorScope, boolean> = { planner: false, reviewers: false, adjudicator: false };
 	/** Round chosen in the add-reviewer chooser, consumed by the name strip that follows it. */
-	#pendingCouncilRound: CouncilRoundGroup = "every";
+	#pendingCouncilRound: CouncilRoundGroup = 1;
 	/** Transient council notice on the status row: a scope warning or a failed roster move. */
 	#councilStatusNotice: { text: string; tone: "warning" | "error" } | undefined;
 
@@ -902,7 +902,7 @@ export class ModelHubComponent implements Component {
 
 	/** The reviewer group a member renders under; a pin outside `council.rounds` keeps its own group. */
 	#councilMemberGroup(member: CouncilMemberSetting): CouncilRoundGroup {
-		return member.round ?? "every";
+		return member.round === 2 ? 2 : 1;
 	}
 
 	/**
@@ -910,13 +910,13 @@ export class ModelHubComponent implements Component {
 	 * group so the parked member stays visible and editable instead of vanishing from the hub.
 	 */
 	#councilRoundGroups(): CouncilRoundGroup[] {
-		const groups: CouncilRoundGroup[] = ["every"];
+		const groups: CouncilRoundGroup[] = [];
 		for (const round of [1, 2] as const) {
 			if (round <= this.#councilRounds || this.#councilMembers.some(member => member.round === round)) {
 				groups.push(round);
 			}
 		}
-		return groups;
+		return groups.length > 0 ? groups : [1];
 	}
 
 	/**
@@ -1008,9 +1008,6 @@ export class ModelHubComponent implements Component {
 			);
 			for (const group of this.#councilRoundGroups()) {
 				const members = this.#councilMembers.filter(member => this.#councilMemberGroup(member) === group);
-				// `Every round` only earns a header when something is in it; a configured round always
-				// gets one, empty or not, because an empty round is the `COUNCIL_ROUND_UNSTAFFED` refusal.
-				if (group === "every" && members.length === 0) continue;
 				const inactive = typeof group === "number" && group > this.#councilRounds;
 				rows.push({ kind: "councilRoundHeader", group, inactive, empty: members.length === 0 });
 				for (const member of members) {
@@ -1717,11 +1714,11 @@ export class ModelHubComponent implements Component {
 				displayName = name;
 			}
 		}
-		const round = group === "every" ? undefined : group;
+		const round: 1 | 2 = group;
 		this.#persistCouncilMembers(
 			[
 				...this.#councilMembers.map(member => ({ ...member })),
-				{ role, enabled: true, ...(round === undefined ? {} : { round }) },
+				{ role, enabled: true, round },
 			],
 			role,
 		);
@@ -1729,19 +1726,14 @@ export class ModelHubComponent implements Component {
 		return role;
 	}
 
-	/** Cycle one member through `every → 1 → 2 → every`, bounded by the configured round count. */
+	/** Cycle one member through `1 ↔ 2`, bounded by the configured round count. */
 	#cycleCouncilMemberRound(role: string): void {
 		const current = this.#councilMembers.find(candidate => candidate.role === role);
 		if (!current) return;
-		const order: CouncilRoundGroup[] = [
-			"every",
-			...(Array.from({ length: this.#councilRounds }, (_v, i) => i + 1) as (1 | 2)[]),
-		];
-		const next = order[(order.indexOf(current.round ?? "every") + 1) % order.length] ?? "every";
-		const round = next === "every" ? undefined : next;
+		const nextRound: 1 | 2 = current.round === 1 ? 2 : 1;
 		const members = this.#councilMembers.map(candidate =>
 			candidate.role === role
-				? { role: candidate.role, enabled: candidate.enabled, ...(round === undefined ? {} : { round }) }
+				? { role: candidate.role, enabled: candidate.enabled, round: nextRound }
 				: { ...candidate },
 		);
 		// A pin beyond `council.rounds` is inert, so cycling it back into range is the one round edit
@@ -1789,20 +1781,13 @@ export class ModelHubComponent implements Component {
 	}
 
 	/**
-	 * First step of "+ Add reviewer…" while two rounds are configured: choose the round before
-	 * naming the member, so the new row lands in the group the user meant. Escape aborts the whole
-	 * add rather than falling back to an unpinned member nobody asked for.
+	 * First step of "+ Add reviewer…": choose the round before naming the member, so the new row
+	 * lands in the group the user meant. Escape aborts the whole add rather than falling back.
 	 */
 	#openCouncilRoundStrip(): void {
 		const chips: StripChip[] = [
 			{ label: "round 1", styled: theme.fg("accent", "round 1"), action: "councilRound", councilRound: 1 },
 			{ label: "round 2", styled: theme.fg("muted", "round 2"), action: "councilRound", councilRound: 2 },
-			{
-				label: "every round",
-				styled: theme.fg("muted", "every round"),
-				action: "councilRound",
-				councilRound: "every",
-			},
 		];
 		this.#strip = { kind: "councilRound", chips, index: 0 };
 	}
@@ -2178,12 +2163,7 @@ export class ModelHubComponent implements Component {
 				// active set. Refuse before the naming prompt rather than after the user has typed a name.
 				const prospective = [...this.#councilMembers, { role: "", enabled: true }];
 				if (this.#refusesCouncilCap(prospective, this.#councilRounds, "Adding a reviewer")) return;
-				// With two rounds configured the group is ambiguous, so it is chosen before naming.
-				if (this.#councilRounds === 2) this.#openCouncilRoundStrip();
-				else {
-					this.#pendingCouncilRound = "every";
-					this.#openRoleNameStrip("newCouncilMember");
-				}
+				this.#openCouncilRoundStrip();
 				return;
 			}
 			case "separator":
@@ -2849,7 +2829,7 @@ export class ModelHubComponent implements Component {
 				continue;
 			}
 			if (rowDef.kind === "councilRoundHeader") {
-				const label = rowDef.group === "every" ? "Every round" : rowDef.group === 1 ? "Round 1" : "Round 2";
+				const label = rowDef.group === 1 ? "Round 1" : "Round 2";
 				const suffix = rowDef.inactive
 					? theme.fg("dim", " · inactive")
 					: rowDef.empty

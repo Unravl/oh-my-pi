@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Advisor intervention cards now name the raising model (and the `WATCHDOG.yml` name when it has one) in the title; a card that batches several advisors lists each model or falls back to `N advisors` with per-note labels.
+- `/advisor status`, `/advisor dump`, and the `/advisor` autocomplete hint now show each advisor's thinking effort so two advisors on the same model at different efforts are distinct.
+
+### Fixed
+
+- Council stats header on the plan approval screen now displays all configured models, scores, and outcomes instead of capping at 10 rows and hiding the rest.
+- Streaming markdown no longer crashes when the native `HighlightStream` binding is missing from a stale workspace addon; completed fences still highlight via `highlightCode`.
+
 ## [18.0.3] - 2026-08-23
 
 ### Added

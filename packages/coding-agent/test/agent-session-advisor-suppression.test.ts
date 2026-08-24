@@ -19,14 +19,15 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
-import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool, type CustomMessage } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { type AdvisorMessageDetails, formatAdvisorBatchContent } from "@oh-my-pi/pi-coding-agent/advisor/advise-tool";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, formatAdvisorModelLabel } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -231,8 +232,8 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		};
 	}
 
-	function isAdvisorCard(message: AgentMessage): boolean {
-		return message.role === "custom" && (message as { customType?: string }).customType === ADVISOR_TYPE;
+	function isAdvisorCard(message: AgentMessage): message is CustomMessage<AdvisorMessageDetails> {
+		return message.role === "custom" && message.customType === ADVISOR_TYPE;
 	}
 
 	function userMessageText(messages: AgentMessage[]): string[] {
@@ -279,6 +280,86 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(persisted.at(-1)).toContain("Fixture verdict confirmed");
 		expect(advisorMock.calls.length).toBeGreaterThanOrEqual(1);
 		expect(mock.calls.length).toBe(1);
+
+		// The note is stamped with the LIVE selector of the advisor that raised it.
+		const stamped = advisorCards[0].details?.notes[0].model;
+		expect(stamped).toBe(formatAdvisorModelLabel(advisor.state.model, advisor.state.thinkingLevel));
+		// claude-sonnet-4-5 exposes controllable effort, so the label is suffixed.
+		expect(stamped).toContain(":");
+	});
+
+	it("stamps each note in one aside flush with its own advisor's live model label", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({
+			responses: [
+				{ content: ["FIRST"], stopReason: "stop" },
+				{ content: ["SECOND"], stopReason: "stop" },
+			],
+		});
+		// One shared advisor stream for both roster entries: dispatch on the
+		// requested effort so each advisor gets its own note deterministically.
+		const callsByEffort = new Map<string, number>();
+		const advisorMock = createMockModel({
+			handler: (_context, options) => {
+				const effort = String(options?.reasoning ?? "none");
+				const nth = (callsByEffort.get(effort) ?? 0) + 1;
+				callsByEffort.set(effort, nth);
+				if (nth > 1) return { content: [], stopReason: "stop" };
+				return {
+					content: [
+						{
+							type: "toolCall" as const,
+							name: "advise",
+							arguments: { note: `nit from ${effort}`, severity: "nit" },
+						},
+					],
+				};
+			},
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			streamFn: mock.stream,
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.enabled": false, "retry.enabled": false });
+		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
+			advisorTools: [],
+			advisorStreamFn: advisorMock.stream,
+		});
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		expect(
+			session.applyAdvisorConfigs(
+				[
+					{ name: "Deep", model: "anthropic/claude-sonnet-4-5:high" },
+					{ name: "Quick", model: "anthropic/claude-sonnet-4-5:low" },
+				],
+				undefined,
+			),
+		).toBe(2);
+
+		await session.prompt("first turn the advisors watch");
+		await session.waitForIdle();
+		await session.waitForAdvisorCatchup(5000);
+		// Advisor asides skip the idle flush; they drain at the next turn's step boundary.
+		await session.prompt("second turn that drains the asides");
+		await session.waitForIdle();
+
+		const cards = session.agent.state.messages.filter(isAdvisorCard);
+		const notes = cards.flatMap(card => card.details?.notes ?? []);
+		const byAdvisor = new Map(notes.map(note => [note.advisor, note.model]));
+		expect(byAdvisor.get("Deep")).toBe("anthropic/claude-sonnet-4-5:high");
+		expect(byAdvisor.get("Quick")).toBe("anthropic/claude-sonnet-4-5:low");
+		// The display-only labels never reach the agent-facing bytes.
+		expect(formatAdvisorBatchContent(notes)).not.toContain("model=");
 	});
 
 	it("waits for preserved advisor card hooks and persistence before reporting catch-up", async () => {

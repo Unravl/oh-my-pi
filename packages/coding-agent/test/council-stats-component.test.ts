@@ -116,12 +116,13 @@ describe("renderCouncilStatsHeader", () => {
 		}
 	});
 
-	it("caps the header at ten rows and reports the dropped count", () => {
+	it("renders all roles, models, and scores without capping them", () => {
 		const many = stats({
 			roles: Array.from({ length: 20 }, (_unused, index) =>
 				role({
 					key: `council${index}`,
 					label: `council${index}`,
+					model: `provider/model-${index}`,
 					kind: "reviewer",
 					findings: index,
 					dispositions: tally({ accepted: index }),
@@ -131,12 +132,16 @@ describe("renderCouncilStatsHeader", () => {
 		});
 
 		const lines = renderCouncilStatsHeader(many, 120);
-		expect(lines).toHaveLength(10);
-		expect(Bun.stripANSI(lines[9])).toContain("more");
-		// The headline survives the cap; rows 10..24 (15 of them) collapse into the overflow row.
+		// 1 headline + 20 roles + 3 warnings = 24 rows
+		expect(lines).toHaveLength(24);
 		expect(Bun.stripANSI(lines[0])).toContain("Council");
-		expect(Bun.stripANSI(lines[9])).toContain("15");
-		expect(renderCouncilStatsHeader(stats(), 120).length).toBeLessThanOrEqual(10);
+		for (let index = 0; index < 20; index++) {
+			expect(lines.some(line => Bun.stripANSI(line).includes(`council${index}`))).toBe(true);
+		}
+		expect(lines.some(line => Bun.stripANSI(line).includes("one"))).toBe(true);
+		expect(lines.some(line => Bun.stripANSI(line).includes("two"))).toBe(true);
+		expect(lines.some(line => Bun.stripANSI(line).includes("three"))).toBe(true);
+		expect(lines.every(line => !Bun.stripANSI(line).includes("more"))).toBe(true);
 	});
 
 	it("never emits tabs, control characters, or raw escape sequences", () => {

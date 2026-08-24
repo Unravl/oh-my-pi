@@ -130,12 +130,24 @@ export interface PerAdvisorStat {
 	name: string;
 	status: AdvisorRuntimeStatus;
 	model?: Model;
+	/** Live clamped thinking effort, so two advisors on one model stay distinct. */
+	effort?: ThinkingLevel;
 	contextWindow: number;
 	contextTokens: number;
 	tokens: AdvisorStats["tokens"];
 	cost: number;
 	messages: AdvisorStats["messages"];
 	sessionId?: string;
+}
+
+/**
+ * Display selector for one advisor: routed `provider/id[@upstream]` plus
+ * `:<effort>` when the model exposes a controllable effort. Routed instances
+ * stay distinct (`#advisorRuntimeSignature` already treats them as different
+ * advisors), so a plain `formatModelString` would wrongly collapse them.
+ */
+export function formatAdvisorModelLabel(model: Model, effort: ThinkingLevel | undefined): string {
+	return formatRetryFallbackSelector(model, effort);
 }
 
 interface AdvisorRetryFallbackState {
@@ -1042,6 +1054,9 @@ export class SessionAdvisors {
 		// The implicit single ("default") advisor stamps no source name, so its
 		// agent-facing `<advisory>` bytes stay identical to the pre-multi-advisor path.
 		const source = advisor.slug ? advisor.name : undefined;
+		// Read the LIVE model/effort, not the build-time descriptor: `#setAdvisorModel`
+		// swaps both on retry-fallback, and a note must name the model that raised it.
+		const model = formatAdvisorModelLabel(advisor.agent.state.model, advisor.thinkingLevel);
 		const interrupting = isInterruptingSeverity(severity);
 		const channel = resolveAdvisorDeliveryChannel({
 			severity,
@@ -1056,10 +1071,10 @@ export class SessionAdvisors {
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
 		});
 		if (channel === "aside") {
-			this.#host.yieldQueue.enqueue("advisor", { note, severity, advisor: source });
+			this.#host.yieldQueue.enqueue("advisor", { note, severity, advisor: source, model });
 			return;
 		}
-		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
+		const notes: AdvisorNote[] = [{ note, severity, advisor: source, model }];
 		const content = formatAdvisorBatchContent(notes);
 		const details = { notes } satisfies AdvisorMessageDetails;
 		if (channel === "preserve") {
@@ -1841,6 +1856,7 @@ export class SessionAdvisors {
 					? "error"
 					: "running",
 			model,
+			effort: advisor.thinkingLevel,
 			contextWindow: model.contextWindow ?? 0,
 			contextTokens,
 			tokens: { input, output, reasoning, cacheRead, cacheWrite, total: totalTokens },
@@ -1876,7 +1892,7 @@ export class SessionAdvisors {
 			if (s.tokens.cacheWrite > 0) spendParts.push(`${s.tokens.cacheWrite.toLocaleString()} cache write`);
 			const spendLine = `Spend: ${spendParts.join(", ")}, $${stats.cost.toFixed(4)}`;
 			if (!s.model || s.status !== "running") return `Advisor "${s.name}" is ${s.status.replace("_", " ")}.`;
-			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
+			return `Advisor is enabled (${formatAdvisorModelLabel(s.model, s.effort)}). ${contextLine}. ${spendLine}.`;
 		}
 		const lines = [`Advisors enabled (${stats.advisors.length}):`];
 		for (const s of stats.advisors) {
@@ -1885,7 +1901,7 @@ export class SessionAdvisors {
 					? `${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} (${Math.round((s.contextTokens / s.contextWindow) * 100)}%)`
 					: `${s.contextTokens.toLocaleString()}`;
 			lines.push(
-				`  • ${s.name}${s.model && s.status === "running" ? ` (${s.model.provider}/${s.model.id})` : ` [${s.status}]`} — context ${ctx} tokens, $${s.cost.toFixed(4)}`,
+				`  • ${s.name}${s.model && s.status === "running" ? ` (${formatAdvisorModelLabel(s.model, s.effort)})` : ` [${s.status}]`} — context ${ctx} tokens, $${s.cost.toFixed(4)}`,
 			);
 		}
 		lines.push(
@@ -1939,7 +1955,10 @@ export class SessionAdvisors {
 					});
 		if (this.#advisors.length === 1) return dump(this.#advisors[0]);
 		return this.#advisors
-			.map(a => `### Advisor: ${a.name} (${a.agent.state.model.provider}/${a.agent.state.model.id})\n\n${dump(a)}`)
+			.map(
+				a =>
+					`### Advisor: ${a.name} (${formatAdvisorModelLabel(a.agent.state.model, a.thinkingLevel)})\n\n${dump(a)}`,
+			)
 			.join("\n\n");
 	}
 }

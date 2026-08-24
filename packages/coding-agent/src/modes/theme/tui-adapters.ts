@@ -198,7 +198,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		},
 		createHighlightStream: (lang?: string) => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
-			if (!validLang) return null;
+			if (!validLang || typeof NativeHighlightStream !== "function") return null;
 			return new NativeHighlightStream(validLang, getHighlightColors(theme));
 		},
 	};

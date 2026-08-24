@@ -19,15 +19,6 @@ import { theme } from "../theme/theme";
 import { formatCost } from "./agent-hub-renderer";
 
 /**
- * Total rows the stats header will ever occupy, headline included. The overlay
- * gives the header region no scrollback, so the cap is a hard ceiling rather
- * than a preview length: everything past it collapses into one `… N more` row.
- */
-const STATS_HEADER_ROW_LIMIT = 10;
-/** Rows kept verbatim once the overflow row is needed. */
-const STATS_HEADER_KEPT_ROWS = STATS_HEADER_ROW_LIMIT - 1;
-
-/**
  * Reviewer outcome labels that follow the accepted fraction. `accepted` is absent because that
  * fraction already reports it, and `duplicate` is absent because a duplicate is folded into the
  * canonical finding's outcome upstream. `accepted with modification` is the one disposition whose
@@ -350,9 +341,5 @@ export function renderCouncilStatsHeader(stats: CouncilRunStats, width: number):
 		if (text) rows.push(truncateToWidth(theme.fg("dim", `! ${text}`), safeWidth, Ellipsis.Unicode));
 	}
 
-	if (rows.length <= STATS_HEADER_ROW_LIMIT) return rows;
-	const dropped = rows.length - STATS_HEADER_KEPT_ROWS;
-	const capped = rows.slice(0, STATS_HEADER_KEPT_ROWS);
-	capped.push(truncateToWidth(theme.fg("dim", `… ${formatNumber(dropped)} more`), safeWidth, Ellipsis.Unicode));
-	return capped;
+	return rows;
 }

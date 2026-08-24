@@ -34,6 +34,12 @@ export interface AdvisorNote {
 	severity?: AdvisorSeverity;
 	/** Which configured advisor produced this note (omitted for the default advisor). */
 	advisor?: string;
+	/**
+	 * Display selector of the model that produced this note
+	 * (`provider/id[@upstream][:effort]`). Display-only: never serialized into
+	 * the agent-facing `<advisory>` bytes.
+	 */
+	model?: string;
 }
 
 /** Details payload on the batched `advisor` custom message rendered in the transcript. */

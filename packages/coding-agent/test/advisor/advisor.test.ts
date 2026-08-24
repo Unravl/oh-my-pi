@@ -4,7 +4,7 @@ import { type AgentMessage, type AgentTelemetryConfig, Tokenizer } from "@oh-my-
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import {
 	AdviseTool,
 	type AdvisorAgent,
@@ -870,7 +870,7 @@ describe("advisor", () => {
 
 		it("emits an advisor attribute only for named advisors, escaping the name", () => {
 			const content = formatAdvisorBatchContent([
-				{ note: "named note", advisor: 'Arch "X"' },
+				{ note: "named note", advisor: 'Arch "X"', model: "anthropic/claude-sonnet-4-5:high" },
 				{ note: "default note" },
 			]);
 			// Named advisor: attribute present, double quote escaped for attribute context.
@@ -878,6 +878,9 @@ describe("advisor", () => {
 			// A note with no source (the legacy/default advisor) carries no advisor attribute.
 			expect(content.split('advisor="').length - 1).toBe(1);
 			expect(content).toContain("default note");
+			// The display-only model label never reaches the agent-facing bytes.
+			expect(content).not.toContain("model=");
+			expect(content).not.toContain("claude-sonnet-4-5");
 		});
 	});
 
@@ -5389,7 +5392,89 @@ describe("advisor", () => {
 			expect(text).toContain("watch the empty case");
 		});
 
-		it("prefixes the note with a named-advisor label, but not for the default advisor", async () => {
+		const header = (lines: readonly string[]): string => strip(lines).split("\n")[0];
+		const SONNET = "anthropic/claude-sonnet-4-5:high";
+		const CODEX = "openai/gpt-5-codex:low";
+
+		it("titles a nameless note with the raising model instead of prefixing the note", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{ notes: [{ note: "deleting the wrong file", severity: "blocker", model: SONNET }] },
+				() => true,
+				uiTheme,
+			);
+			const head = header(card.render(80));
+			expect(head).toContain("Advisor");
+			expect(head).toContain("anthropic");
+			expect(head).toContain("claude-sonnet-4-5");
+			expect(head).toContain(":high");
+			// Attribution lives in the title; a homogeneous card carries no per-note label.
+			expect(strip(card.render(80))).not.toContain(`[${SONNET}]`);
+		});
+
+		it("titles a named note with both the roster name and the model", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{ notes: [{ note: "module boundary leak", severity: "concern", advisor: "Architecture", model: SONNET }] },
+				() => true,
+				uiTheme,
+			);
+			const head = header(card.render(80));
+			expect(head).toContain("Architecture");
+			expect(head).toContain("anthropic");
+			expect(head).toContain("claude-sonnet-4-5");
+			expect(head).toContain(":high");
+			expect(strip(card.render(80))).not.toContain("[Architecture]");
+		});
+
+		it("distinguishes a batch from two advisors in the title and labels each note", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{
+					notes: [
+						{ note: "boundary leak", advisor: "Architecture", model: SONNET },
+						{ note: "unchecked input", advisor: "Security", model: CODEX },
+					],
+				},
+				() => true,
+				uiTheme,
+			);
+			// Wide enough for both selectors: the title names both models.
+			const wide = header(card.render(80));
+			expect(wide).toContain("claude-sonnet-4-5");
+			expect(wide).toContain("gpt-5-codex");
+			// Too narrow for the join: the title degrades to the distinct-source count.
+			expect(header(card.render(60))).toContain("2 advisors");
+			// A mixed batch always keeps per-note attribution, at either width.
+			for (const width of [80, 60]) {
+				const text = strip(card.render(width));
+				expect(text).toContain("[Architecture]");
+				expect(text).toContain("[Security]");
+			}
+		});
+
+		it("titles legacy cards that carry only a roster name and drops the per-note label", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{
+					notes: [
+						{ note: "boundary leak", advisor: "Architecture" },
+						{ note: "second thought", advisor: "Architecture" },
+					],
+				},
+				() => true,
+				uiTheme,
+			);
+			const text = strip(card.render(80));
+			expect(header(card.render(80))).toContain("Architecture");
+			expect(text).not.toContain("[Architecture]");
+		});
+
+		it("does not attribute a mixed legacy batch to its one named advisor", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			const card = createAdvisorMessageCard(
@@ -5403,10 +5488,69 @@ describe("advisor", () => {
 				uiTheme,
 			);
 			const text = strip(card.render(80));
+			expect(header(card.render(80))).not.toContain("Architecture");
 			expect(text).toContain("[Architecture]");
-			expect(text).toContain("module boundary leak");
 			// The implicit "default" advisor stays unlabeled.
 			expect(text).not.toContain("[default]");
+		});
+
+		it("keeps a collapsed batch mixed when only the hidden note comes from the second advisor", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{
+					notes: [
+						{ note: "note a1", advisor: "Architecture", model: SONNET },
+						{ note: "note a2", advisor: "Architecture", model: SONNET },
+						{ note: "note a3", advisor: "Architecture", model: SONNET },
+						{ note: "note b1", advisor: "Security", model: CODEX },
+					],
+				},
+				() => false,
+				uiTheme,
+			);
+			const text = strip(card.render(80));
+			const head = header(card.render(80));
+			const bothModels = head.includes("claude-sonnet-4-5") && head.includes("gpt-5-codex");
+			if (!bothModels) expect(head).toContain("2 advisors");
+			expect(text).toContain("+1 more");
+			// The three visible notes still carry the source the hidden note contradicts.
+			expect(text.split("[Architecture]").length - 1).toBe(3);
+		});
+
+		it("keeps the model tail on one title line at a narrow width", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			for (const advisor of [undefined, "Architecture"]) {
+				const card = createAdvisorMessageCard(
+					{ notes: [{ note: "short", advisor, model: SONNET }] },
+					() => true,
+					uiTheme,
+				);
+				const rendered = card.render(30);
+				const head = strip(rendered).split("\n")[0];
+				expect(head.split("\n")).toHaveLength(1);
+				expect(visibleWidth(rendered[0])).toBeLessThanOrEqual(30);
+				expect(head).toContain(":high");
+			}
+		});
+
+		it("sanitizes control sequences out of a roster name promoted into the title", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const card = createAdvisorMessageCard(
+				{
+					notes: [{ note: "hostile name", advisor: "Arch\tit\r\nect\x1b[31mure\x1b]0;title\x07", model: SONNET }],
+				},
+				() => true,
+				uiTheme,
+			);
+			const rendered = card.render(80);
+			const head = strip(rendered).split("\n")[0];
+			expect(head.split("\n")).toHaveLength(1);
+			expect(head).toContain("Arch it ecture");
+			expect(head).not.toContain("\x1b]0;");
+			expect(head).not.toContain("\x07");
 		});
 
 		it("collapses to the first notes with an overflow hint", async () => {

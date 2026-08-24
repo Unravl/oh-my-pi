@@ -1,5 +1,11 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, highlightCode, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import {
+	getMarkdownTheme,
+	getThemeByName,
+	highlightCode,
+	setThemeInstance,
+} from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { HighlightStream } from "@oh-my-pi/pi-natives";
 
 const unifiedDiffChunks = [
 	[
@@ -49,4 +55,17 @@ describe("diff highlighter chunk parity", () => {
 			);
 		});
 	}
+});
+
+describe("markdown highlight stream factory", () => {
+	it("does not throw when the native HighlightStream binding is missing", () => {
+		const stream = getMarkdownTheme().createHighlightStream?.("python");
+		if (typeof HighlightStream === "function") {
+			expect(stream).not.toBeNull();
+			expect(typeof stream?.push).toBe("function");
+			expect(stream?.push("def f():\n")).toContain("def");
+			return;
+		}
+		expect(stream ?? null).toBeNull();
+	});
 });

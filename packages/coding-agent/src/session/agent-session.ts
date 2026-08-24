@@ -357,6 +357,7 @@ import { YieldQueue } from "./yield-queue";
 export * from "./agent-session-events";
 export * from "./agent-session-types";
 export type { AdvisorStats, PerAdvisorStat } from "./session-advisors";
+export { formatAdvisorModelLabel } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 

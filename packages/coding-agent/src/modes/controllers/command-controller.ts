@@ -40,7 +40,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
-import type { AsyncJobSnapshotItem } from "../../session/agent-session";
+import { type AsyncJobSnapshotItem, formatAdvisorModelLabel } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
@@ -406,7 +406,7 @@ export class CommandController {
 							: "dim";
 				info += `\n${theme.fg(color, glyph)} ${theme.bold(a.name)} ${theme.fg("dim", `[${label}]`)}\n`;
 				if (a.model) {
-					info += `${theme.fg("dim", "Model:")} ${a.model.provider}/${a.model.id}\n`;
+					info += `${theme.fg("dim", "Model:")} ${formatAdvisorModelLabel(a.model, a.effort)}\n`;
 				}
 				if (a.model && usageReports) {
 					const quota = formatCompactQuota(
@@ -448,7 +448,7 @@ export class CommandController {
 		}
 		if (model) {
 			info += `${theme.bold("Provider")}\n`;
-			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n`;
+			info += `${theme.fg("dim", "Model:")} ${formatAdvisorModelLabel(model, stats.advisors[0]?.effort)}\n`;
 		}
 		if (model && usageReports) {
 			const quota = formatCompactQuota(

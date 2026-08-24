@@ -9,6 +9,7 @@ import { shareSession } from "../export/share";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
+import { formatAdvisorModelLabel } from "../session/agent-session";
 import { urlHyperlinkAlways } from "../tui";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
@@ -71,7 +72,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		getTuiAutocompleteDescription: runtime => {
 			const stats = runtime.ctx.session.getAdvisorStats();
 			if (stats.active && stats.advisors.length > 1) return `Advisor: on (${stats.advisors.length} advisors)`;
-			if (stats.active && stats.model) return `Advisor: on (${stats.model.provider}/${stats.model.id})`;
+			if (stats.active && stats.model)
+				return `Advisor: on (${formatAdvisorModelLabel(stats.model, stats.advisors[0]?.effort)})`;
 			if (stats.configured) return "Advisor: configured, no model";
 			return "Advisor: off";
 		},
