@@ -1785,15 +1785,13 @@ describe("ModelHub", () => {
 			hub.handleInput("\n");
 			expect(footerLine(hub.render(200))).toContain("round 1");
 
-			// Escape aborts the add outright rather than creating a round-less member.
+			// Escape aborts the add outright rather than creating a member.
 			hub.handleInput(ESC);
 			expect(onCouncilRosterChange).not.toHaveBeenCalled();
 
 			hub.handleInput("\n");
 			hub.handleInput("\x1b[C"); // right → round 2
-			hub.handleInput("\n"); // commit the round, opening the name strip
-			expect(footerLine(hub.render(200))).toContain("Reviewer:");
-			hub.handleInput("\n"); // blank name → auto id
+			hub.handleInput("\n"); // commit the round, creating the reviewer and jumping to model selection
 			expect(onCouncilRosterChange.mock.lastCall?.[0].at(-1)).toEqual({
 				role: "council1",
 				enabled: true,
@@ -1821,9 +1819,7 @@ describe("ModelHub", () => {
 			expect(footerLine(hub.render(200))).toContain("round 1");
 			expect(footerLine(hub.render(200))).not.toContain("every round");
 
-			hub.handleInput("\n"); // commit round 1
-			expect(footerLine(hub.render(200))).toContain("Reviewer:");
-			hub.handleInput("\n"); // blank name -> auto id
+			hub.handleInput("\n"); // commit round 1, creating the reviewer
 			expect(onCouncilRosterChange.mock.lastCall?.[0].at(-1)).toEqual({
 				role: "council1",
 				enabled: true,
@@ -1831,6 +1827,37 @@ describe("ModelHub", () => {
 			});
 		});
 
+		test("adding reviewers from scratch numbers them sequentially", () => {
+			const settings = Settings.isolated({
+				"council.members": [],
+				"council.rounds": 1,
+			});
+			const { hub, onCouncilRosterChange } = createHub({
+				models: [makeModel("test", "model-a")],
+				scoped: true,
+				settings,
+				hub: { initialSection: "council" },
+			});
+
+			// Focus the + Add reviewer… row
+			pressDown(hub, COUNCIL_DOWN_TO_FIRST_REVIEWER);
+			hub.handleInput("\n"); // open round strip
+			hub.handleInput("\n"); // choose round 1 -> creates council1 and opens model browser
+			expect(onCouncilRosterChange).toHaveBeenLastCalledWith([{ role: "council1", enabled: true, round: 1 }]);
+			settings.override("council.members", [{ role: "council1", enabled: true, round: 1 }]);
+			hub.handleInput("\n"); // select model in browser, opening thinking strip
+			hub.handleInput(ESC); // close thinking strip, returning to roles list on council1
+
+			// Focus the + Add reviewer… row (one down from council1)
+			hub.handleInput(DOWN);
+			hub.handleInput("\n"); // open round strip
+			hub.handleInput("\n"); // choose round 1 -> creates council2
+
+			expect(onCouncilRosterChange).toHaveBeenLastCalledWith([
+				{ role: "council1", enabled: true, round: 1 },
+				{ role: "council2", enabled: true, round: 1 },
+			]);
+		});
 		test("the lead and advisor rows stay editable while a project-scoped roster locks the reviewer rows", async () => {
 			const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-hub-council-leads-"));
 			const cwd = path.join(root, "project");

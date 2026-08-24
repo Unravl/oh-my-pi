@@ -1424,12 +1424,13 @@ export class ModelHubComponent implements Component {
 		const chip = strip.chips[strip.index];
 		if (!chip) return;
 		if (strip.kind === "councilRound") {
-			// The chooser has no `item`; it only stashes the round the name strip will apply.
+			// The chooser has no `item`; it creates the reviewer in the chosen round and opens model assignment.
 			if (chip.action !== "councilRound" || chip.councilRound === undefined) return;
 			this.#pendingCouncilRound = chip.councilRound;
 			this.#strip = null;
 			this.#chipRanges = [];
-			this.#openRoleNameStrip("newCouncilMember");
+			const role = this.#createCouncilMember("", this.#pendingCouncilRound);
+			if (role) this.#startAssign(role);
 			return;
 		}
 		switch (chip.action) {
@@ -1697,6 +1698,10 @@ export class ModelHubComponent implements Component {
 	#createCouncilMember(name: string, group: CouncilRoundGroup): string | undefined {
 		const used = new Set(this.#councilMembers.map(member => member.role));
 		let suffix = 1;
+		for (const member of this.#councilMembers) {
+			const match = /^council(\d+)$/.exec(member.role);
+			if (match) suffix = Math.max(suffix, Number(match[1]) + 1);
+		}
 		while (used.has(`council${suffix}`)) suffix++;
 		let role = `council${suffix}`;
 		let displayName: string | undefined;
@@ -1716,10 +1721,7 @@ export class ModelHubComponent implements Component {
 		}
 		const round: 1 | 2 = group;
 		this.#persistCouncilMembers(
-			[
-				...this.#councilMembers.map(member => ({ ...member })),
-				{ role, enabled: true, round },
-			],
+			[...this.#councilMembers.map(member => ({ ...member })), { role, enabled: true, round }],
 			role,
 		);
 		if (displayName !== undefined) this.#setCouncilDisplayName(role, displayName);
@@ -2678,8 +2680,15 @@ export class ModelHubComponent implements Component {
 		// The Model Hub is the one Council surface that honours a configured `modelTags` name: it is
 		// where that name is authored. With no name and no built-in tag the row falls back to the same
 		// stable label every other Council surface shows — `Reviewer N`, `Planner`/`Adjudicator`, or a
-		// custom (possibly salvaged) id humanized from its own words.
-		if (council && !Object.hasOwn(modelTags, role) && !info.tag) return sanitizeInline(councilRoleLabel(role));
+		// custom (possibly salvaged) id humanized from its own words. Redundant or conflicting
+		// "Reviewer <N>" custom display names are ignored so slot numbering stays honest.
+		if (
+			council &&
+			(!Object.hasOwn(modelTags, role) || (info.name && /^Reviewer\s+\d+$/i.test(info.name))) &&
+			!info.tag
+		) {
+			return sanitizeInline(councilRoleLabel(role));
+		}
 		return sanitizeInline(info.tag ?? info.name ?? role);
 	}
 
